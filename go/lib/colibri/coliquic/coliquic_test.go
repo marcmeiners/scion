@@ -48,37 +48,61 @@ import (
 
 // TestColibriQuic creates a server and a client, both with SCION-COLIBRI addresses and paths,
 // and communicates both via a quic connection.
+// The test also checks the ability of QUIC to receive packets destined to a different address
+// that the one it is listening to (e.g. our BR forwards colibri packets with C=1 to the
+// local colibri service instead of the destination). This part of the test is left here for
+// future reference, although it doesn't test anything from our codebase.
 func TestColibriQuic(t *testing.T) {
-
 	testCases := map[string]struct {
-		serverAddr net.Addr
-		clientAddr net.Addr
+		// XXX(juagargi) port numbers must be different on each test
+		clientAddr net.Addr // packets sent from here
+		dstAddr    net.Addr // packets originally sent to here
+		rcvAddr    net.Addr // packets end up here. If empty, dstAddr will be used
 	}{
-		"scion": {
-			serverAddr: mockScionAddress(t, "1-ff00:0:111",
-				&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 43210, Zone: ""}),
-			clientAddr: mockScionAddress(t, "1-ff00:0:112",
-				&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345, Zone: ""}),
+		"scion_no_routing": {
+			clientAddr: mockScionAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:12345")),
+			dstAddr: mockScionAddress(t, "1-ff00:0:112",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:43211")),
 		},
-		"colibri": {
-			serverAddr: mockScionAddress(t, "1-ff00:0:111",
-				&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 43211, Zone: ""}),
-			clientAddr: mockColibriAddress(t, "1-ff00:0:112",
-				&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12346, Zone: ""}),
+		"scion_one_transit": {
+			clientAddr: mockScionAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:12346")),
+			dstAddr: mockScionAddress(t, "1-ff00:0:112",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:43212")),
+			rcvAddr: mockScionAddress(t, "1-ff00:0:110",
+				xtest.MustParseUDPAddr(t, "127.0.0.2:43212")),
+		},
+		"colibri_no_routing": {
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:12347")),
+			dstAddr: mockScionAddress(t, "1-ff00:0:112",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:43213")),
+		},
+		"colibri_one_transit": {
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:12348")),
+			dstAddr: mockScionAddress(t, "1-ff00:0:112",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:43214")),
+			rcvAddr: mockScionAddress(t, "1-ff00:0:110",
+				xtest.MustParseUDPAddr(t, "127.0.0.2:43214")),
 		},
 	}
 	for name, tc := range testCases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel() // we are not really using sockets -> no bind clashes
-			thisNet := newMockNetwork()
+			if tc.rcvAddr == nil {
+				tc.rcvAddr = tc.dstAddr
+			}
+			thisNet := newMockNetwork(t, tc.dstAddr, tc.rcvAddr)
 			// server:
 			serverTlsConfig := &tls.Config{
 				Certificates: []tls.Certificate{*createTestCertificate(t)},
 				NextProtos:   []string{"coliquictest"},
 			}
 			serverQuicConfig := &quic.Config{KeepAlive: true}
-			listener, err := quic.Listen(newConnMock(t, tc.serverAddr, thisNet),
+			listener, err := quic.Listen(newConnMock(t, tc.rcvAddr, thisNet),
 				serverTlsConfig, serverQuicConfig)
 			require.NoError(t, err)
 
@@ -89,10 +113,16 @@ func TestColibriQuic(t *testing.T) {
 				session, err := listener.Accept(ctx)
 				require.NoError(t, err)
 
+				// check the local address
+				require.Equal(t, tc.rcvAddr.String(), session.LocalAddr().String())
+
+				// check if the path used is colibri
 				colPath, err := GetColibriPath(session)
 				require.NoError(t, err)
 				clientPath := tc.clientAddr.(*snet.UDPAddr).Path
 				if _, ok := clientPath.(path.Colibri); ok {
+					// if it is colibri, check it is the same as the one used originally
+					// at the source by comparing their bytes
 					buff := make([]byte, colPath.Len())
 					err = colPath.SerializeTo(buff)
 					require.NoError(t, err)
@@ -122,7 +152,7 @@ func TestColibriQuic(t *testing.T) {
 			ctx2, cancelF2 := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancelF2()
 			session, err := quic.DialContext(ctx2, newConnMock(t, tc.clientAddr, thisNet),
-				tc.serverAddr, "serverName", clientTlsConfig, clientQuicConfig)
+				tc.dstAddr, "serverName", clientTlsConfig, clientQuicConfig)
 			require.NoError(t, err)
 			stream, err := session.OpenStream()
 			require.NoError(t, err)
@@ -142,11 +172,11 @@ func TestColibriQuic(t *testing.T) {
 }
 
 func TestColibriGRPC(t *testing.T) {
-	thisNet := newMockNetwork()
+	thisNet := newMockNetwork(t)
 
 	// server: (don't reuse addresses on any test, as quic caches the connections)
 	serverAddr := mockScionAddress(t, "1-ff00:0:111",
-		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 23211, Zone: ""})
+		xtest.MustParseUDPAddr(t, "127.0.0.1:23211"))
 	serverTlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{*createTestCertificate(t)},
 		NextProtos:   []string{"coliquicgrpc"},
@@ -205,7 +235,7 @@ func TestColibriGRPC(t *testing.T) {
 
 	// client:
 	clientAddr := mockColibriAddress(t, "1-ff00:0:112",
-		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 2346, Zone: ""})
+		xtest.MustParseUDPAddr(t, "127.0.0.1:2346"))
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"coliquicgrpc"},
@@ -243,23 +273,37 @@ func TestColibriGRPC(t *testing.T) {
 	}
 }
 
+// mockNetwork is used to simulate a network, where packets are sent and read.
+// The routing field is used to determine to which address will be the packet sent,
+// if an enty is present. E.g. if routing["a"]=="b", a packet with destination "a" will be
+// sent to "b". If no entry is present, the destination address of the packet is used.
+// The channels field organizes packets per receiver address (as string).
+type mockNetwork struct {
+	routing  map[string]string
+	channels map[string]chan packet
+	m        sync.Mutex
+}
+
 // packet is a packet received by a mockNetwork.
 type packet struct {
 	sender net.Addr
 	data   []byte
 }
 
-// mockNetwork is used to simulate a network, where packets are sent and read.
-// The channels field organizes packets per receiver address (as string).
-type mockNetwork struct {
-	channels map[string]chan packet
-	m        sync.Mutex
-}
-
-func newMockNetwork() *mockNetwork {
-	return &mockNetwork{
+func newMockNetwork(t *testing.T, redirPairs ...net.Addr) *mockNetwork {
+	if len(redirPairs)%2 != 0 {
+		require.Fail(t, "redir pairs should have an even number of elements")
+	}
+	n := &mockNetwork{
+		routing:  make(map[string]string, len(redirPairs)/2),
 		channels: make(map[string]chan packet),
 	}
+	for i := 0; i < len(redirPairs); i += 2 {
+		orig := redirPairs[i].String()
+		dst := redirPairs[i+1].String()
+		n.routing[orig] = dst
+	}
+	return n
 }
 
 // ReadFrom returns the data from the first packet for receiver, and its sender.
@@ -273,16 +317,20 @@ func (n *mockNetwork) ReadFrom(receiver net.Addr) ([]byte, net.Addr) {
 // WriteTo writes a packet from sender to receiver, with data.
 func (n *mockNetwork) WriteTo(sender, receiver net.Addr, data []byte) {
 	pac := packet{sender: sender, data: data}
-	key := receiver.String()
-	n.ensureChannel(key)
-	n.channels[key] <- pac
+	orig := receiver.String()
+	n.ensureChannel(orig)
+	dst := n.routing[orig]
+	n.channels[dst] <- pac
 }
 
 func (n *mockNetwork) ensureChannel(key string) {
 	n.m.Lock()
 	defer n.m.Unlock()
 	if _, found := n.channels[key]; !found {
-		n.channels[key] = make(chan packet, 32)
+		n.channels[key] = make(chan packet, 1024) // buffer size big enough to never block writers
+		if _, found = n.routing[key]; !found {
+			n.routing[key] = key
+		}
 	}
 }
 
