@@ -24,6 +24,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"sync"
@@ -53,6 +54,7 @@ import (
 // local colibri service instead of the destination). This part of the test is left here for
 // future reference, although it doesn't test anything from our codebase.
 func TestColibriQuic(t *testing.T) {
+	// TODO(juagargi) remove this test as it's superseded by TestQUICMultipleConnections
 	testCases := map[string]struct {
 		// XXX(juagargi) port numbers must be different on each test
 		clientAddr net.Addr // packets sent from here
@@ -167,6 +169,133 @@ func TestColibriQuic(t *testing.T) {
 			}
 			err = stream.Close()
 			require.NoError(t, err)
+		})
+	}
+}
+
+// TestQUICMultipleConnections tests that a single QUIC listener is able to receive packets
+// destined to it, as well as destined to another host but captured by the network.
+// This test is useful to asses that our colibri service will be able to serve requests
+// when it is the destination AS, as well as when it is a transit AS.
+// The listener will receive messages via COLIBRI paths and regular SCION.
+func TestQUICMultipleConnections(t *testing.T) {
+	// XXX(juagargi) use different addresses for each test case
+	testCases := map[string]struct {
+		clientAddr net.Addr
+		serverAddr net.Addr   // where the service is listening
+		messages   []net.Addr // destination addresses of each request/message
+	}{
+		"dest_two_msgs": {
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:11111")),
+			serverAddr: mockScionAddress(t, "1-ff00:0:110",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:31010")),
+			messages: []net.Addr{
+				// 1: same as server
+				mockScionAddress(t, "1-ff00:0:110",
+					xtest.MustParseUDPAddr(t, "127.0.0.1:31010")),
+				// 2: same as server
+				mockScionAddress(t, "1-ff00:0:110",
+					xtest.MustParseUDPAddr(t, "127.0.0.1:31010")),
+			},
+		},
+		"transit_two_msgs": {
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:11112")),
+			serverAddr: mockScionAddress(t, "1-ff00:0:110",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:31011")),
+			messages: []net.Addr{
+				// 1: destination COL SRV at 112
+				mockScionAddress(t, "1-ff00:0:112",
+					xtest.MustParseUDPAddr(t, "127.0.0.2:31011")),
+				// 2: destination COL SRV at 112
+				mockScionAddress(t, "1-ff00:0:112",
+					xtest.MustParseUDPAddr(t, "127.0.0.2:31011")),
+			},
+		},
+		"mix_three_msgs": {
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:11113")),
+			serverAddr: mockScionAddress(t, "1-ff00:0:110",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:31012")),
+			messages: []net.Addr{
+				// 1: destination COL SRV at 112
+				mockScionAddress(t, "1-ff00:0:112",
+					xtest.MustParseUDPAddr(t, "127.0.0.2:31012")),
+				// 2: same as server
+				mockScionAddress(t, "1-ff00:0:110",
+					xtest.MustParseUDPAddr(t, "127.0.0.1:31012")),
+				// 3: destination COL SRV at 112
+				mockScionAddress(t, "1-ff00:0:112",
+					xtest.MustParseUDPAddr(t, "127.0.0.2:31012")),
+			},
+		},
+	}
+	for name, tc := range testCases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// prepare the routing for the mock network: all intended destinataries go to server
+			fwdEntries := make([]net.Addr, 0)
+			for _, dstAddr := range tc.messages {
+				fwdEntries = append(fwdEntries, dstAddr, tc.serverAddr)
+			}
+			thisNet := newMockNetwork(t, fwdEntries...)
+			// server:
+			serverTlsConfig := &tls.Config{
+				Certificates: []tls.Certificate{*createTestCertificate(t)},
+				NextProtos:   []string{"coliquictest"},
+			}
+			serverQuicConfig := &quic.Config{KeepAlive: true}
+			listener, err := quic.Listen(newConnMock(t, tc.serverAddr, thisNet),
+				serverTlsConfig, serverQuicConfig)
+			require.NoError(t, err)
+
+			receivedMsgs := make(chan string, 1024)
+			go func(listener quic.Listener) {
+				ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancelF()
+				for i := 0; i < len(tc.messages); i++ {
+					session, err := listener.Accept(ctx)
+					require.NoError(t, err)
+					stream, err := session.AcceptStream(ctx)
+					require.NoError(t, err)
+					var buff [16384]byte
+					n, err := stream.Read(buff[:])
+					require.NoError(t, err)
+					msg := string(buff[:n])
+					err = stream.Close()
+					require.NoError(t, err)
+					receivedMsgs <- msg
+				}
+			}(listener)
+
+			// client:
+			conn := newConnMock(t, tc.clientAddr, thisNet)
+			clientTlsConfig := &tls.Config{
+				InsecureSkipVerify: true,
+				NextProtos:         []string{"coliquictest"},
+			}
+			clientQuicConfig := &quic.Config{KeepAlive: true}
+			ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancelF()
+			for i, dstAddr := range tc.messages {
+				session, err := quic.DialContext(ctx, conn, dstAddr, "serverName", clientTlsConfig, clientQuicConfig)
+				require.NoError(t, err)
+				stream, err := session.OpenStream()
+				require.NoError(t, err)
+				msg := fmt.Sprintf("hello world %d", i)
+				_, err = stream.Write([]byte(msg))
+				require.NoError(t, err)
+				select {
+				case msgAtServer := <-receivedMsgs:
+					require.Equal(t, msg, msgAtServer)
+				case <-time.After(time.Second):
+					require.Fail(t, "time out waiting for message received at server")
+				}
+				err = stream.Close()
+				require.NoError(t, err)
+			}
 		})
 	}
 }
