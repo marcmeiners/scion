@@ -37,12 +37,17 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
 
+	"github.com/scionproto/scion/go/co/reservation/test"
+	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
+	"github.com/scionproto/scion/go/lib/snet/mock_snet"
 	"github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/snet/squic"
+	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/lib/xtest"
 	sgrpc "github.com/scionproto/scion/go/pkg/grpc"
+	"github.com/scionproto/scion/go/pkg/grpc/mock_grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	mock_col "github.com/scionproto/scion/go/pkg/proto/colibri/mock_colibri"
 )
@@ -400,6 +405,110 @@ func TestColibriGRPC(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "timed out")
 	}
+}
+
+// TestClient ensures that the client works as expected.
+// Namely, it tests that there is only one quic session per neighbor opened at all times,
+// even when dialing a destination that is not a direct neighbor.
+// e.g. with the tiny topology, when located at ff00:0:111, and
+// dialing ff00:0:112 there should only be one session opened to ff00:0:110 .
+func TestClient(t *testing.T) {
+	t.Skip("deleteme enable this test")
+	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
+	defer cancelF()
+	// the path to use for all tests:
+	path111to112 := test.NewPath(0, "1-ff00:0:111", 10, 1, "1-ff00:0:110", 2, 20, "1-ff00:0:112", 0)
+	// mock topology loader and router
+	topo := MockTopoLoader{}
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	router := mock_snet.NewMockRouter(ctrl)
+	router.EXPECT().Route(gomock.Any(), gomock.Any()).AnyTimes().
+		Return(test.NewSnetPath("1-ff00:0:111", 10, 1, "1-ff00:0:110"), nil)
+	// because we will prefill the neighbor entries, the connection is only used
+	// for GRPC to actually perform the RPC via NewColibriServiceClient
+	serverAddr := &snet.UDPAddr{
+		IA:      xtest.MustParseIA("1-ff00:0:110"),
+		Host:    xtest.MustParseUDPAddr(t, "127.0.0.1:12345"),
+		NextHop: xtest.MustParseUDPAddr(t, "127.0.0.1:30200"), // address of BR, never used
+	}
+	thisNet := newMockNetwork(t)
+	conn := mock_grpc.NewMockDialer(ctrl)
+	conn.EXPECT().Dial(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+		func(_ context.Context, addr net.Addr) (*grpc.ClientConn, error) {
+			require.IsType(t, &snet.UDPAddr{}, addr)
+			require.Equal(t, serverAddr, addr)
+
+			// client:
+			clientAddr := mockColibriAddress(t, "1-ff00:0:111",
+				xtest.MustParseUDPAddr(t, "127.0.0.1:12346"))
+			clientTlsConfig := &tls.Config{
+				InsecureSkipVerify: true,
+				NextProtos:         []string{"coliquicgrpc"},
+			}
+			clientQuicConfig := &quic.Config{KeepAlive: true}
+			connDial := squic.ConnDialer{
+				Conn:       newConnMock(t, clientAddr, thisNet),
+				TLSConfig:  clientTlsConfig,
+				QUICConfig: clientQuicConfig,
+			}
+			quicConn, err := connDial.Dial(ctx, serverAddr)
+			require.NoError(t, err)
+
+			dialer := func(context.Context, string) (net.Conn, error) {
+				return quicConn, nil
+			}
+			// var deleteme *grpc.ClientConn
+			// deleteme.
+			return grpc.DialContext(ctx, addr.String(), grpc.WithInsecure(),
+				grpc.WithContextDialer(dialer))
+		})
+
+	oprtr, err := NewServiceClientOperator(topo, router, conn)
+	require.NoError(t, err)
+	// time.Sleep(3 * time.Second)
+	oprtr.neighborsMutex.Lock()
+	oprtr.neighbors[10] = serverAddr
+	oprtr.neighborsMutex.Unlock()
+
+	// RPC to direct neighbor 110
+	path111to112.CurrentStep = 0
+	client1, err := oprtr.ColibriClient(ctx, path111to112)
+	require.NoError(t, err)
+	// for {
+	// 	select {
+
+	// 	}
+	// }
+	_, err = client1.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
+	require.NoError(t, err)
+
+	// RPC to indirect neighbor 112
+	path111to112.CurrentStep = 1
+	client2, err := oprtr.ColibriClient(ctx, path111to112)
+	require.NoError(t, err)
+	_, err = client2.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
+	require.NoError(t, err)
+
+	// check again to direct neighbor
+	_, err = client1.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
+	require.NoError(t, err)
+}
+
+type MockTopoLoader struct{}
+
+func (MockTopoLoader) InterfaceIDs() []uint16 {
+	// return []uint16{10}
+	return nil
+}
+
+func (topo MockTopoLoader) InterfaceInfoMap() map[common.IFIDType]topology.IFInfo {
+	return nil
+	// return map[common.IFIDType]topology.IFInfo{
+	// 	1: {
+	// 		IA: xtest.MustParseIA("1-ff00:0:110"),
+	// 	},
+	// }
 }
 
 // mockNetwork is used to simulate a network, where packets are sent and read.

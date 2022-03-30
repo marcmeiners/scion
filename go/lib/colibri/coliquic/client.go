@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
@@ -38,6 +39,12 @@ import (
 
 type GRPCClientDialer interface {
 	libgrpc.Dialer
+}
+
+type TopoLoader interface {
+	InterfaceIDs() []uint16
+	InterfaceInfoMap() map[common.IFIDType]topology.IFInfo
+	IA() addr.IA
 }
 
 // ServiceClientOperator can obtain COLIBRI gRPC clients to talk to the service.
@@ -57,7 +64,8 @@ type ServiceClientOperator struct {
 	colServicesMutex     sync.Mutex
 }
 
-func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
+// func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
+func NewServiceClientOperator(topo TopoLoader, router snet.Router,
 	clientConn GRPCClientDialer) (*ServiceClientOperator, error) {
 
 	operator := &ServiceClientOperator{
@@ -153,7 +161,7 @@ func (o *ServiceClientOperator) neighborAddr(egressID uint16) (*snet.UDPAddr, bo
 }
 
 // initialize waits in the background until this operator can obtain paths to all the remaining IAs.
-func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
+func (o *ServiceClientOperator) initialize(topo TopoLoader) {
 	o.neighboringIAs = neighbors(topo)
 	o.neighboringIAs[0] = topo.IA() // interface with ID 0 is ourselves
 	// a new local copy to find their addresses and keep track of the remaining neighbors
@@ -163,7 +171,6 @@ func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
 		log.Info("will initialize colibri client operator", "neighbor_count", len(remainingIAs))
 
 		for len(remainingIAs) > 0 {
-			time.Sleep(2 * time.Second)
 			log.Debug("colibri client operator initializing", "remaining", len(remainingIAs))
 			newNeighbors := make(map[uint16]*snet.UDPAddr)
 			remainingIAs = o.findNeighbors(newNeighbors, remainingIAs)
@@ -173,6 +180,9 @@ func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
 					o.neighboringColSvcs[egressID] = addr
 				}
 				o.neighboringColSvcsMu.Unlock()
+			}
+			if len(remainingIAs) > 0 {
+				time.Sleep(2 * time.Second)
 			}
 		}
 		log.Info("colibri client operator initialization complete")
@@ -188,7 +198,7 @@ func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
 }
 
 // periodicResolveNeighbors periodically scans the topology and gets new paths for the neighbors.
-func (o *ServiceClientOperator) periodicResolveNeighbors(topo *topology.Loader) {
+func (o *ServiceClientOperator) periodicResolveNeighbors(topo TopoLoader) {
 	for {
 		time.Sleep(15 * time.Minute)
 		neighbors := neighbors(topo)
@@ -254,7 +264,7 @@ func (o *ServiceClientOperator) periodicDiscoverServices() {
 }
 
 // neighbors returns the neighboring IAs by egress interface ID.
-func neighbors(topo *topology.Loader) map[uint16]addr.IA {
+func neighbors(topo TopoLoader) map[uint16]addr.IA {
 	neighbors := make(map[uint16]addr.IA)
 	for ifid, info := range topo.InterfaceInfoMap() {
 		neighbors[uint16(ifid)] = info.IA
