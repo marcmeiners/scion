@@ -83,7 +83,7 @@ func NewConnListener(listener quic.Listener) net.Listener {
 type ServerStack struct {
 	Daemon       daemon.Connector
 	Router       snet.Router
-	Dialer       *libgrpc.QUICDialer
+	GRPCDialer   *libgrpc.QUICDialer
 	QUICListener net.Listener
 	TCPListener  net.Listener
 	serverAddr   *snet.UDPAddr
@@ -136,7 +136,7 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, daemon
 		Conn:      client,
 		TLSConfig: ephemeralTLSConfig,
 	}
-	s.Dialer = &libgrpc.QUICDialer{
+	s.GRPCDialer = &libgrpc.QUICDialer{
 		Dialer: quicClientDialer,
 		Rewriter: &messenger.AddressRewriter{
 			// Use the local Daemon to construct paths to the target AS.

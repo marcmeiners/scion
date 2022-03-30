@@ -62,7 +62,7 @@ var _ reservationstorage.Store = (*Store)(nil)
 // NewStore creates a new reservation store.
 func NewStore(topo *topology.Loader, tcpDialer libgrpc.Dialer,
 	router snet.Router,
-	dialer coliquic.GRPCClientDialer, db backend.DB, admitter admission.Admitter,
+	dialer libgrpc.Dialer, db backend.DB, admitter admission.Admitter,
 	masterKey []byte) (*Store, error) {
 
 	// check that the admitter is well configured

@@ -37,10 +37,6 @@ import (
 	dpb "github.com/scionproto/scion/go/pkg/proto/discovery"
 )
 
-type GRPCClientDialer interface {
-	libgrpc.Dialer
-}
-
 type TopoLoader interface {
 	InterfaceIDs() []uint16
 	InterfaceInfoMap() map[common.IFIDType]topology.IFInfo
@@ -55,7 +51,7 @@ type TopoLoader interface {
 // - Ensure we return a gRPC client using the correct path (the path is used at the server to
 //   measure the BW used by the services).
 type ServiceClientOperator struct {
-	connDialer           GRPCClientDialer
+	connDialer           libgrpc.Dialer
 	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per interface ID
 	neighboringColSvcsMu sync.Mutex
 	neighboringIAs       map[uint16]addr.IA
@@ -66,7 +62,7 @@ type ServiceClientOperator struct {
 
 // func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
 func NewServiceClientOperator(topo TopoLoader, router snet.Router,
-	clientConn GRPCClientDialer) (*ServiceClientOperator, error) {
+	clientConn libgrpc.Dialer) (*ServiceClientOperator, error) {
 
 	operator := &ServiceClientOperator{
 		connDialer:         clientConn,
