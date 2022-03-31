@@ -433,6 +433,7 @@ func TestClient(t *testing.T) {
 		NextHop: xtest.MustParseUDPAddr(t, "127.0.0.1:30200"), // address of BR, never used
 	}
 	thisNet := newMockNetwork(t)
+	pconn := newConnMock(t, serverAddr, thisNet)
 	conn := mock_grpc.NewMockDialer(ctrl)
 	conn.EXPECT().Dial(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
 		func(_ context.Context, addr net.Addr) (*grpc.ClientConn, error) {
@@ -463,8 +464,9 @@ func TestClient(t *testing.T) {
 			return grpc.DialContext(ctx, addr.String(), grpc.WithInsecure(),
 				grpc.WithContextDialer(dialer))
 		})
+	_ = conn
 
-	oprtr, err := NewServiceClientOperator(topo, router, conn)
+	oprtr, err := NewServiceClientOperator(topo, pconn, router, nil)
 	require.NoError(t, err)
 	// time.Sleep(3 * time.Second)
 	oprtr.neighborsMutex.Lock()
@@ -586,10 +588,8 @@ func mockScionAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
 	}
 }
 
-// mockColibriAddress returns a SCION address with a Colibri path.
-func mockColibriAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
-	t.Helper()
-	p := colibri.ColibriPath{
+func newTestColibriPath() *colibri.ColibriPath {
+	return &colibri.ColibriPath{
 		PacketTimestamp: colibri.Timestamp{1},
 		InfoField: &colibri.InfoField{
 			C:           true,
@@ -622,6 +622,12 @@ func mockColibriAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
 			},
 		},
 	}
+}
+
+// mockColibriAddress returns a SCION address with a Colibri path.
+func mockColibriAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
+	t.Helper()
+	p := newTestColibriPath()
 	buffLen := 8 + 24 + (len(p.HopFields) * 8) // timestamp + infofield + 3*hops
 	buff := make([]byte, buffLen)
 	err := p.SerializeTo(buff)

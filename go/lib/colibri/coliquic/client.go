@@ -24,6 +24,8 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/infra/infraenv"
+	"github.com/scionproto/scion/go/lib/infra/messenger"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
@@ -32,6 +34,7 @@ import (
 	"github.com/scionproto/scion/go/lib/snet"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/topology"
+	"github.com/scionproto/scion/go/pkg/grpc"
 	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	dpb "github.com/scionproto/scion/go/pkg/proto/discovery"
@@ -51,7 +54,7 @@ type TopoLoader interface {
 // - Ensure we return a gRPC client using the correct path (the path is used at the server to
 //   measure the BW used by the services).
 type ServiceClientOperator struct {
-	connDialer           libgrpc.Dialer
+	gRPCDialer           grpc.Dialer
 	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per interface ID
 	neighboringColSvcsMu sync.Mutex
 	neighboringIAs       map[uint16]addr.IA
@@ -60,16 +63,37 @@ type ServiceClientOperator struct {
 	colServicesMutex     sync.Mutex
 }
 
-// func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
-func NewServiceClientOperator(topo TopoLoader, router snet.Router,
-	clientConn libgrpc.Dialer) (*ServiceClientOperator, error) {
+func NewServiceClientOperator(
+	topo TopoLoader,
+	pconn net.PacketConn,
+	router snet.Router,
+	resolver messenger.Resolver) (
+	*ServiceClientOperator, error) {
+
+	tlsConfig, err := infraenv.GenerateTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	connDialer := NewPersistentQUIC(pconn, tlsConfig, nil)
+
+	gRPCDialer := &libgrpc.QUICDialer{
+		Dialer: connDialer,
+		Rewriter: &messenger.AddressRewriter{
+			// Use the local Daemon to construct paths to the target AS.
+			Router: router,
+			// We never resolve addresses in the local AS, so pass a nil here.
+			SVCRouter:             nil,
+			Resolver:              resolver,
+			SVCResolutionFraction: 1.337,
+		},
+	}
 
 	operator := &ServiceClientOperator{
-		connDialer:         clientConn,
+		gRPCDialer:         gRPCDialer,
 		neighboringColSvcs: make(map[uint16]*snet.UDPAddr, len(topo.InterfaceIDs())),
 		srvResolver: &DiscoveryColSrvRes{
-			Router: router,
-			Dialer: clientConn,
+			Router:     router,
+			GRPCDialer: gRPCDialer,
 		},
 		colServices: make(map[addr.IA]*snet.UDPAddr),
 	}
@@ -99,7 +123,7 @@ func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
 		o.colServices[*dst] = addr
 	}
 
-	conn, err := o.connDialer.Dial(ctx, addr)
+	conn, err := o.gRPCDialer.Dial(ctx, addr)
 	if err != nil {
 		log.Debug("error dialing a grpc connection", "addr", addr, "err", err)
 		return nil, err
@@ -140,7 +164,7 @@ func (o *ServiceClientOperator) ColibriClient(
 		// In that case they will follow same logic as above
 	}
 
-	conn, err := o.connDialer.Dial(ctx, rAddr)
+	conn, err := o.gRPCDialer.Dial(ctx, rAddr)
 	if err != nil {
 		log.Debug("error dialing a grpc connection", "addr", rAddr, "err", err)
 		return nil, err
@@ -297,8 +321,8 @@ type ColSrvResolver interface {
 }
 
 type DiscoveryColSrvRes struct {
-	Router snet.Router
-	Dialer libgrpc.Dialer
+	Router     snet.Router
+	GRPCDialer grpc.Dialer
 }
 
 func (r *DiscoveryColSrvRes) ResolveColibriService(ctx context.Context, ia *addr.IA) (
@@ -315,7 +339,7 @@ func (r *DiscoveryColSrvRes) ResolveColibriService(ctx context.Context, ia *addr
 		NextHop: path.UnderlayNextHop(),
 		SVC:     addr.SvcDS,
 	}
-	conn, err := r.Dialer.Dial(ctx, ds)
+	conn, err := r.GRPCDialer.Dial(ctx, ds)
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,6 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 	"github.com/scionproto/scion/go/lib/svc"
-	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 )
 
 // GetColibriPath returns the (last) COLIBRI path used with this quic Session, or nil if none.
@@ -81,14 +80,15 @@ func NewConnListener(listener quic.Listener) net.Listener {
 }
 
 type ServerStack struct {
-	Daemon       daemon.Connector
-	Router       snet.Router
-	GRPCDialer   *libgrpc.QUICDialer
-	QUICListener net.Listener
-	TCPListener  net.Listener
-	serverAddr   *snet.UDPAddr
-	clientNet    *snet.SCIONNetwork
-	serverNet    *snet.SCIONNetwork
+	Daemon           daemon.Connector
+	Router           snet.Router
+	ClientPacketConn net.PacketConn
+	Resolver         messenger.Resolver
+	QUICListener     net.Listener
+	TCPListener      net.Listener
+	serverAddr       *snet.UDPAddr
+	clientNet        *snet.SCIONNetwork
+	serverNet        *snet.SCIONNetwork
 }
 
 func NewServerStack(ctx context.Context, serverAddr *snet.UDPAddr, daemonAddr string) (
@@ -127,30 +127,18 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, daemon
 	if err != nil {
 		return err
 	}
+	s.ClientPacketConn = client
+
 	// Generate throwaway self-signed TLS certificates. These DO NOT PROVIDE ANY SECURITY.
 	ephemeralTLSConfig, err := infraenv.GenerateTLSConfig()
 	if err != nil {
 		return err
 	}
-	quicClientDialer := &squic.ConnDialer{
-		Conn:      client,
-		TLSConfig: ephemeralTLSConfig,
-	}
-	s.GRPCDialer = &libgrpc.QUICDialer{
-		Dialer: quicClientDialer,
-		Rewriter: &messenger.AddressRewriter{
-			// Use the local Daemon to construct paths to the target AS.
-			Router: s.Router,
-			// We never resolve addresses in the local AS, so pass a nil here.
-			SVCRouter: nil,
-			Resolver: &svc.Resolver{
-				LocalIA: s.serverAddr.IA,
-				// Reuse the network with SCMP error support.
-				ConnFactory: s.clientNet.Dispatcher,
-				LocalIP:     s.serverAddr.Host.IP,
-			},
-			SVCResolutionFraction: 1.337,
-		},
+	s.Resolver = &svc.Resolver{
+		LocalIA: s.serverAddr.IA,
+		// Reuse the network with SCMP error support.
+		ConnFactory: s.clientNet.Dispatcher,
+		LocalIP:     s.serverAddr.Host.IP,
 	}
 
 	rawListener, err := quic.Listen(server, ephemeralTLSConfig, nil)
