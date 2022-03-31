@@ -67,32 +67,22 @@ func TestColibriQuic(t *testing.T) {
 		rcvAddr    net.Addr // packets end up here. If empty, dstAddr will be used
 	}{
 		"scion_no_routing": {
-			clientAddr: mockScionAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:12345")),
-			dstAddr: mockScionAddress(t, "1-ff00:0:112",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:43211")),
+			clientAddr: mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345"),
+			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43211"),
 		},
 		"scion_one_transit": {
-			clientAddr: mockScionAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:12346")),
-			dstAddr: mockScionAddress(t, "1-ff00:0:112",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:43212")),
-			rcvAddr: mockScionAddress(t, "1-ff00:0:110",
-				xtest.MustParseUDPAddr(t, "127.0.0.2:43212")),
+			clientAddr: mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12346"),
+			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43212"),
+			rcvAddr:    mockScionAddress(t, "1-ff00:0:110", "127.0.0.2:43212"),
 		},
 		"colibri_no_routing": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:12347")),
-			dstAddr: mockScionAddress(t, "1-ff00:0:112",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:43213")),
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:12347"),
+			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43213"),
 		},
 		"colibri_one_transit": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:12348")),
-			dstAddr: mockScionAddress(t, "1-ff00:0:112",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:43214")),
-			rcvAddr: mockScionAddress(t, "1-ff00:0:110",
-				xtest.MustParseUDPAddr(t, "127.0.0.2:43214")),
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:12348"),
+			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43214"),
+			rcvAddr:    mockScionAddress(t, "1-ff00:0:110", "127.0.0.2:43214"),
 		},
 	}
 	for name, tc := range testCases {
@@ -191,48 +181,35 @@ func TestQUICMultipleConnections(t *testing.T) {
 		messages   []net.Addr // destination addresses of each request/message
 	}{
 		"dest_two_msgs": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:11111")),
-			serverAddr: mockScionAddress(t, "1-ff00:0:110",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:31010")),
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:11111"),
+			serverAddr: mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31010"),
 			messages: []net.Addr{
 				// 1: same as server
-				mockScionAddress(t, "1-ff00:0:110",
-					xtest.MustParseUDPAddr(t, "127.0.0.1:31010")),
+				mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31010"),
 				// 2: same as server
-				mockScionAddress(t, "1-ff00:0:110",
-					xtest.MustParseUDPAddr(t, "127.0.0.1:31010")),
+				mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31010"),
 			},
 		},
 		"transit_two_msgs": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:11112")),
-			serverAddr: mockScionAddress(t, "1-ff00:0:110",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:31011")),
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:11112"),
+			serverAddr: mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31011"),
 			messages: []net.Addr{
 				// 1: destination COL SRV at 112
-				mockScionAddress(t, "1-ff00:0:112",
-					xtest.MustParseUDPAddr(t, "127.0.0.2:31011")),
+				mockScionAddress(t, "1-ff00:0:112", "127.0.0.2:31011"),
 				// 2: destination COL SRV at 112
-				mockScionAddress(t, "1-ff00:0:112",
-					xtest.MustParseUDPAddr(t, "127.0.0.2:31011")),
+				mockScionAddress(t, "1-ff00:0:112", "127.0.0.2:31011"),
 			},
 		},
 		"mix_three_msgs": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:11113")),
-			serverAddr: mockScionAddress(t, "1-ff00:0:110",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:31012")),
+			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:11113"),
+			serverAddr: mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31012"),
 			messages: []net.Addr{
 				// 1: destination COL SRV at 112
-				mockScionAddress(t, "1-ff00:0:112",
-					xtest.MustParseUDPAddr(t, "127.0.0.2:31012")),
+				mockScionAddress(t, "1-ff00:0:112", "127.0.0.2:31012"),
 				// 2: same as server
-				mockScionAddress(t, "1-ff00:0:110",
-					xtest.MustParseUDPAddr(t, "127.0.0.1:31012")),
+				mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31012"),
 				// 3: destination COL SRV at 112
-				mockScionAddress(t, "1-ff00:0:112",
-					xtest.MustParseUDPAddr(t, "127.0.0.2:31012")),
+				mockScionAddress(t, "1-ff00:0:112", "127.0.0.2:31012"),
 			},
 		},
 	}
@@ -309,8 +286,7 @@ func TestColibriGRPC(t *testing.T) {
 	thisNet := newMockNetwork(t)
 
 	// server: (don't reuse addresses on any test, as quic caches the connections)
-	serverAddr := mockScionAddress(t, "1-ff00:0:111",
-		xtest.MustParseUDPAddr(t, "127.0.0.1:23211"))
+	serverAddr := mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:23211")
 	serverTlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{*createTestCertificate(t)},
 		NextProtos:   []string{"coliquicgrpc"},
@@ -368,8 +344,7 @@ func TestColibriGRPC(t *testing.T) {
 	}()
 
 	// client:
-	clientAddr := mockColibriAddress(t, "1-ff00:0:112",
-		xtest.MustParseUDPAddr(t, "127.0.0.1:2346"))
+	clientAddr := mockColibriAddress(t, "1-ff00:0:112", "127.0.0.1:2346")
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"coliquicgrpc"},
@@ -441,8 +416,7 @@ func TestClient(t *testing.T) {
 			require.Equal(t, serverAddr, addr)
 
 			// client:
-			clientAddr := mockColibriAddress(t, "1-ff00:0:111",
-				xtest.MustParseUDPAddr(t, "127.0.0.1:12346"))
+			clientAddr := mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:12346")
 			clientTlsConfig := &tls.Config{
 				InsecureSkipVerify: true,
 				NextProtos:         []string{"coliquicgrpc"},
@@ -575,11 +549,11 @@ func (n *mockNetwork) ensureChannel(key string) {
 }
 
 // mockScionAddress returns a SCION address with a SCION type path.
-func mockScionAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
+func mockScionAddress(t *testing.T, ia, host string) net.Addr {
 	t.Helper()
 	return &snet.UDPAddr{
 		IA:   xtest.MustParseIA(ia),
-		Host: host,
+		Host: xtest.MustParseUDPAddr(t, host),
 		Path: path.SCION{
 			Raw: xtest.MustParseHexString("0000208000000111000001000100022200000100003f0001" +
 				"0000010203040506003f00030002010203040506003f00000002010203040506003f000100000" +
@@ -625,7 +599,7 @@ func newTestColibriPath() *colibri.ColibriPath {
 }
 
 // mockColibriAddress returns a SCION address with a Colibri path.
-func mockColibriAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
+func mockColibriAddress(t *testing.T, ia, host string) net.Addr {
 	t.Helper()
 	p := newTestColibriPath()
 	buffLen := 8 + 24 + (len(p.HopFields) * 8) // timestamp + infofield + 3*hops
@@ -635,7 +609,7 @@ func mockColibriAddress(t *testing.T, ia string, host *net.UDPAddr) net.Addr {
 
 	return &snet.UDPAddr{
 		IA:   xtest.MustParseIA(ia),
-		Host: host,
+		Host: xtest.MustParseUDPAddr(t, host),
 		Path: path.Colibri{
 			Raw: buff,
 		},
