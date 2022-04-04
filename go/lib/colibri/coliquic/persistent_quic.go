@@ -69,16 +69,9 @@ func NewPersistentQUIC(pconn net.PacketConn, tlsConfig *tls.Config,
 // Dial reuses an existing quic session for the path in the destination address, or creates a
 // new one. With the session, it opens a new stream that behaves like a net.Conn.
 func (pq *PersistentQUIC) Dial(ctx context.Context, dst net.Addr) (net.Conn, error) {
-	var repr string
-	switch addr := dst.(type) {
-	case *snet.UDPAddr:
-		var err error
-		repr, err = addrToString(addr)
-		if err != nil {
-			return nil, err
-		}
-	default:
-		repr = addr.String() // e.g. 10.1.2.3:12345
+	repr, err := addrToString(dst)
+	if err != nil {
+		return nil, err
 	}
 	sess, ok := pq.sessions[repr]
 	if !ok {
@@ -87,6 +80,7 @@ func (pq *PersistentQUIC) Dial(ctx context.Context, dst net.Addr) (net.Conn, err
 		if err != nil {
 			return nil, err
 		}
+		pq.sessions[repr] = sess
 	}
 	stream, err := sess.OpenStreamSync(ctx)
 	if err != nil {
@@ -98,6 +92,7 @@ func (pq *PersistentQUIC) Dial(ctx context.Context, dst net.Addr) (net.Conn, err
 	}, nil
 }
 
+// streamAsConn is a net.Conn backed by a quic stream.
 type streamAsConn struct {
 	stream  quic.Stream
 	session quic.Session
@@ -135,9 +130,19 @@ func (c streamAsConn) Close() error {
 	return c.stream.Close()
 }
 
-// addrToString returns a string representation of the address/path tuple passed as argument.
+// addrToString returns a string represenation of the address.
+func addrToString(addr net.Addr) (string, error) {
+	switch addr := addr.(type) {
+	case *snet.UDPAddr:
+		return snetAddrToString(addr)
+	default:
+		return addr.String(), nil // e.g. 10.1.2.3:12345
+	}
+}
+
+// snetAddrToString returns a string representation of the address/path tuple passed as argument.
 // The representation is invatiant to e.g. packet size and precision timestamps.
-func addrToString(addr *snet.UDPAddr) (string, error) {
+func snetAddrToString(addr *snet.UDPAddr) (string, error) {
 	switch p := addr.Path.(type) {
 	case path.Empty:
 		return addrPathToString(addr, empty.PathType, nil), nil
