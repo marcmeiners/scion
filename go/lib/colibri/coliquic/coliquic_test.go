@@ -493,9 +493,10 @@ func (topo MockTopoLoader) InterfaceInfoMap() map[common.IFIDType]topology.IFInf
 // sent to "b". If no entry is present, the destination address of the packet is used.
 // The channels field organizes packets per receiver address (as string).
 type mockNetwork struct {
-	routing  map[string]string
-	channels map[string]chan packet
-	m        sync.Mutex
+	debugMessagesEnabled bool
+	routing              map[string]string
+	channels             map[string]chan packet
+	m                    sync.Mutex
 }
 
 // packet is a packet received by a mockNetwork.
@@ -520,11 +521,19 @@ func newMockNetwork(t *testing.T, redirPairs ...net.Addr) *mockNetwork {
 	return n
 }
 
+func (n *mockNetwork) EnableDebugMessages(enable bool) *mockNetwork {
+	n.debugMessagesEnabled = enable
+	return n
+}
+
 // ReadFrom returns the data from the first packet for receiver, and its sender.
 func (n *mockNetwork) ReadFrom(receiver net.Addr) ([]byte, net.Addr) {
 	key := receiver.String()
 	n.ensureChannel(key)
 	pac := <-n.channels[key]
+	if n.debugMessagesEnabled {
+		fmt.Printf("[mocknet] ReadFrom (%s -> %s) = %d bytes\n", pac.sender, receiver, len(pac.data))
+	}
 	return pac.data, pac.sender
 }
 
@@ -535,6 +544,9 @@ func (n *mockNetwork) WriteTo(sender, receiver net.Addr, data []byte) {
 	n.ensureChannel(orig)
 	dst := n.routing[orig]
 	n.channels[dst] <- pac
+	if n.debugMessagesEnabled {
+		fmt.Printf("[mocknet] WriteTo  (%s -> %s) = %d bytes\n", sender, receiver, len(pac.data))
+	}
 }
 
 func (n *mockNetwork) ensureChannel(key string) {
@@ -560,6 +572,31 @@ func mockScionAddress(t *testing.T, ia, host string) net.Addr {
 				"10203040506"),
 		},
 	}
+}
+
+// mockColibriAddress returns a SCION address with a Colibri path.
+func mockColibriAddress(t *testing.T, ia, host string) net.Addr {
+	t.Helper()
+	p := newTestColibriPath()
+	buffLen := 8 + 24 + (len(p.HopFields) * 8) // timestamp + infofield + 3*hops
+	buff := make([]byte, buffLen)
+	err := p.SerializeTo(buff)
+	require.NoError(t, err)
+
+	return &snet.UDPAddr{
+		IA:   xtest.MustParseIA(ia),
+		Host: xtest.MustParseUDPAddr(t, host),
+		Path: path.Colibri{
+			Raw: buff,
+		},
+	}
+}
+
+func mockScionAddressWithPath(t *testing.T, ia, host string, path ...interface{}) net.Addr {
+	scionPath := test.NewSnetPath(path...)
+	addr := mockScionAddress(t, ia, host)
+	addr.(*snet.UDPAddr).Path = scionPath.Dataplane()
+	return addr
 }
 
 func newTestColibriPath() *colibri.ColibriPath {
@@ -594,24 +631,6 @@ func newTestColibriPath() *colibri.ColibriPath {
 				EgressId:  0,
 				Mac:       xtest.MustParseHexString("00000000"),
 			},
-		},
-	}
-}
-
-// mockColibriAddress returns a SCION address with a Colibri path.
-func mockColibriAddress(t *testing.T, ia, host string) net.Addr {
-	t.Helper()
-	p := newTestColibriPath()
-	buffLen := 8 + 24 + (len(p.HopFields) * 8) // timestamp + infofield + 3*hops
-	buff := make([]byte, buffLen)
-	err := p.SerializeTo(buff)
-	require.NoError(t, err)
-
-	return &snet.UDPAddr{
-		IA:   xtest.MustParseIA(ia),
-		Host: xtest.MustParseUDPAddr(t, host),
-		Path: path.Colibri{
-			Raw: buff,
 		},
 	}
 }
