@@ -48,6 +48,139 @@ func TestInvariantColibriRepresentation(t *testing.T) {
 	require.Equal(t, repr1, repr2)
 }
 
+// TestListenerManySessions is a multi part test that checks the listener for proper behavior.
+// - part 1 tests listening without any sessions yet.
+// - part 2 reuses the previous session
+// - part 3 opens a new session
+// - part 4 closes first session and opens a new stream w/ second session
+// - part 5 closes second and only remaining session, opens a new one
+// - part 6: closes listener and accept should return an error
+func TestListenerManySessions(t *testing.T) {
+	wgServer := sync.WaitGroup{}
+	thisNet := newMockNetwork(t)
+	serverAddr := mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:30001")
+	wgServer.Add(1)
+	messagesReceivedAtServer := make(chan string)
+	go func() {
+		defer wgServer.Done()
+		pconn := newConnMock(t, serverAddr, thisNet)
+		serverTlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{*createTestCertificate(t)},
+			NextProtos:   []string{"coliquictest"},
+		}
+		listener := NewListener(pconn, serverTlsConfig, nil)
+		// keep track of sessions and streams
+		sessions := make(map[quic.Session]struct{})
+		streams := make(map[quic.Stream]struct{})
+		buff := make([]byte, 16384)
+		expectedSessionsPerPart := []int{1, 1, 2, 2, 3}
+		// parts 1-5
+		for i, expectedSessions := range expectedSessionsPerPart {
+			conn, err := listener.Accept()
+			require.NoError(t, err)
+			n, err := conn.Read(buff)
+			require.NoError(t, err)
+			c := conn.(*streamAsConn)
+			sessions[c.session] = struct{}{}
+			streams[c.stream] = struct{}{}
+			require.Len(t, sessions, expectedSessions, "wrong number of sessions")
+			require.Len(t, streams, i+1)
+			messagesReceivedAtServer <- string(buff[:n])
+		}
+		// part 6
+		err := listener.Close()
+		require.NoError(t, err)
+		conn, err := listener.Accept()
+		require.Nil(t, conn)
+		require.Error(t, err)
+	}()
+	// client
+	ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelF()
+	clientAddr := mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345")
+	pconn := newConnMock(t, clientAddr, thisNet)
+	clientTlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"coliquictest"},
+	}
+	// useful func to read or timeout
+	messageFromServer := func() string {
+		select {
+		case <-ctx.Done():
+			return "context deadline exceeded: no message from server"
+		case msg := <-messagesReceivedAtServer:
+			return msg
+		}
+	}
+	// part 1
+	sess1, err := quic.DialContext(ctx, pconn, serverAddr, "serverName", clientTlsConfig, nil)
+	require.NoError(t, err)
+	stream, err := sess1.OpenStream()
+	require.NoError(t, err)
+	msg := "hello server 1"
+	_, err = stream.Write([]byte(msg))
+	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
+	err = stream.Close()
+	require.NoError(t, err)
+	// part 2
+	stream, err = sess1.OpenStream()
+	require.NoError(t, err)
+	msg = "hello server 2"
+	_, err = stream.Write([]byte(msg))
+	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
+	err = stream.Close()
+	require.NoError(t, err)
+	// part 3
+	sess2, err := quic.DialContext(ctx, pconn, serverAddr, "serverName", clientTlsConfig, nil)
+	require.NoError(t, err)
+	stream, err = sess2.OpenStream()
+	require.NoError(t, err)
+	msg = "hello server 3"
+	_, err = stream.Write([]byte(msg))
+	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
+	err = stream.Close()
+	require.NoError(t, err)
+	// part 4
+	err = sess1.CloseWithError(quic.ApplicationErrorCode(0), "")
+	require.NoError(t, err)
+	stream, err = sess2.OpenStream()
+	require.NoError(t, err)
+	msg = "hello server 4"
+	_, err = stream.Write([]byte(msg))
+	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
+	err = stream.Close()
+	require.NoError(t, err)
+	// part 5
+	err = sess2.CloseWithError(quic.ApplicationErrorCode(0), "")
+	require.NoError(t, err)
+	sess3, err := quic.DialContext(ctx, pconn, serverAddr, "serverName", clientTlsConfig, nil)
+	require.NoError(t, err)
+	stream, err = sess3.OpenStream()
+	require.NoError(t, err)
+	msg = "hello server 5"
+	_, err = stream.Write([]byte(msg))
+	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
+	err = stream.Close()
+	require.NoError(t, err)
+	// part 6 is server only
+	// wait for server to shutdown
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		wgServer.Wait()
+	}()
+	select {
+	case <-ctx.Done():
+		require.FailNow(t, "context deadline exceeded, server not done")
+	case <-serverDone:
+	}
+}
+
 // TestSingleSession checks that only one session is created per path.
 func TestReuseSession(t *testing.T) {
 	t.Skip("reenable this test")

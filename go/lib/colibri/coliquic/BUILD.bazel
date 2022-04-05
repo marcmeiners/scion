@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "client.go",
         "persistent_quic.go",
+        "persistent_quic_listener.go",
         "server.go",
     ],
     importpath = "github.com/scionproto/scion/go/lib/colibri/coliquic",
