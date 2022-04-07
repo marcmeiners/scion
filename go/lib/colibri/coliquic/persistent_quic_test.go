@@ -16,7 +16,8 @@ package coliquic
 
 import (
 	"crypto/tls"
-	"errors"
+	"fmt"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -72,20 +73,20 @@ func TestListenerManySessions(t *testing.T) {
 		// keep track of sessions and streams
 		sessions := make(map[quic.Session]struct{})
 		streams := make(map[quic.Stream]struct{})
-		buff := make([]byte, 16384)
 		expectedSessionsPerPart := []int{1, 1, 2, 2, 3}
 		// parts 1-5
 		for i, expectedSessions := range expectedSessionsPerPart {
 			conn, err := listener.Accept()
 			require.NoError(t, err)
-			n, err := conn.Read(buff)
+			buff2, err := io.ReadAll(conn)
 			require.NoError(t, err)
+			msg := string(buff2)
 			c := conn.(*streamAsConn)
 			sessions[c.session] = struct{}{}
 			streams[c.stream] = struct{}{}
 			require.Len(t, sessions, expectedSessions, "wrong number of sessions")
 			require.Len(t, streams, i+1)
-			messagesReceivedAtServer <- string(buff[:n])
+			messagesReceivedAtServer <- msg
 		}
 		// part 6
 		err := listener.Close()
@@ -113,6 +114,7 @@ func TestListenerManySessions(t *testing.T) {
 		}
 	}
 	// part 1
+	t.Log("-------------------- part 1")
 	sess1, err := quic.DialContext(ctx, pconn, serverAddr, "serverName", clientTlsConfig, nil)
 	require.NoError(t, err)
 	stream, err := sess1.OpenStream()
@@ -120,19 +122,21 @@ func TestListenerManySessions(t *testing.T) {
 	msg := "hello server 1"
 	_, err = stream.Write([]byte(msg))
 	require.NoError(t, err)
-	require.Equal(t, msg, messageFromServer())
 	err = stream.Close()
 	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
 	// part 2
+	t.Log("-------------------- part 2")
 	stream, err = sess1.OpenStream()
 	require.NoError(t, err)
 	msg = "hello server 2"
 	_, err = stream.Write([]byte(msg))
 	require.NoError(t, err)
-	require.Equal(t, msg, messageFromServer())
 	err = stream.Close()
 	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
 	// part 3
+	t.Log("-------------------- part 3")
 	sess2, err := quic.DialContext(ctx, pconn, serverAddr, "serverName", clientTlsConfig, nil)
 	require.NoError(t, err)
 	stream, err = sess2.OpenStream()
@@ -140,10 +144,11 @@ func TestListenerManySessions(t *testing.T) {
 	msg = "hello server 3"
 	_, err = stream.Write([]byte(msg))
 	require.NoError(t, err)
-	require.Equal(t, msg, messageFromServer())
 	err = stream.Close()
 	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
 	// part 4
+	t.Log("-------------------- part 4")
 	err = sess1.CloseWithError(quic.ApplicationErrorCode(0), "")
 	require.NoError(t, err)
 	stream, err = sess2.OpenStream()
@@ -151,10 +156,11 @@ func TestListenerManySessions(t *testing.T) {
 	msg = "hello server 4"
 	_, err = stream.Write([]byte(msg))
 	require.NoError(t, err)
-	require.Equal(t, msg, messageFromServer())
 	err = stream.Close()
 	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
 	// part 5
+	t.Log("-------------------- part 5")
 	err = sess2.CloseWithError(quic.ApplicationErrorCode(0), "")
 	require.NoError(t, err)
 	sess3, err := quic.DialContext(ctx, pconn, serverAddr, "serverName", clientTlsConfig, nil)
@@ -164,152 +170,181 @@ func TestListenerManySessions(t *testing.T) {
 	msg = "hello server 5"
 	_, err = stream.Write([]byte(msg))
 	require.NoError(t, err)
-	require.Equal(t, msg, messageFromServer())
 	err = stream.Close()
 	require.NoError(t, err)
+	require.Equal(t, msg, messageFromServer())
 	// part 6 is server only
 	// wait for server to shutdown
-	serverDone := make(chan struct{})
-	go func() {
-		defer close(serverDone)
-		wgServer.Wait()
-	}()
-	select {
-	case <-ctx.Done():
-		require.FailNow(t, "context deadline exceeded, server not done")
-	case <-serverDone:
-	}
+	require.NoError(t, waitWithContext(ctx, &wgServer))
 }
 
 // TestSingleSession checks that only one session is created per path.
+// Mimic the tiny topology, and attempt to connect from 111 to 110 and 112, using
+// both regular SCION and COLIBRI paths.
+// This test is a multipart one:
+// - part 1:
 func TestReuseSession(t *testing.T) {
-	t.Skip("reenable this test")
-	// mimic the tiny topology, and attempt to connect from 111 to 110 and 112, using
-	// both regular SCION and COLIBRI paths
-	// deleteme XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX change timeout below
-	ctx, cancelF := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelF()
 	thisNet := newMockNetwork(t)
-	clientAddr := mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345")
-	pconn := newConnMock(t, clientAddr, thisNet)
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"coliquictest"},
 	}
 
-	dialer := NewPersistentQUIC(pconn, clientTlsConfig, nil)
+	dialer := NewPersistentQUIC(
+		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345"), thisNet),
+		clientTlsConfig, nil)
 	require.Len(t, dialer.sessions, 0)
 
-	serverWg := sync.WaitGroup{}
-	clientWg := sync.WaitGroup{}
 	messages := make(chan string)
-	runServer := func(serverAddr net.Addr, msg string) {
-		serverWg.Add(1)
-		go func() {
-			defer serverWg.Done()
-			serverTlsConfig := &tls.Config{
-				Certificates: []tls.Certificate{*createTestCertificate(t)},
-				NextProtos:   []string{"coliquictest"},
-			}
-			serverQuicConfig := &quic.Config{KeepAlive: true}
-			listener, err := quic.Listen(newConnMock(t, serverAddr, thisNet),
-				serverTlsConfig, serverQuicConfig)
-			require.NoError(t, err, "failed with message %s", msg)
-			session, err := listener.Accept(ctx)
-			// N.B. the server blocks here because there is no client trying to open a new session, but only a new stream
-			// for this to work, the server must be only waiting to open a stream if the session was already opened
-			require.NoError(t, err, "failed with message %s", msg)
-
-			t.Logf("connected  to %s", serverAddr)
-			stream, err := session.AcceptStream(ctx)
-			require.NoError(t, err, "failed with message %s", msg)
-			buff := make([]byte, 16384)
-			n, err := stream.Read(buff)
-			// n, err := io.ReadFull(stream, buff)
-			require.NoError(t, err, "failed with message %s", msg)
-			messages <- string(buff[:n])
-			// err = stream.Close()
-			// require.NoError(t, err, "failed with message %s", msg)
-			// err = listener.Close()
-			// require.NoError(t, err, "failed with message %s", msg)
-			t.Logf("server end at %s", serverAddr)
-		}()
+	runPersistentServer := func(serverAddr net.Addr, msg string) {
+		// health of the test itself: no previous path should be pressent in the dialer
+		repr, err := addrToString(serverAddr)
+		require.NoError(t, err, "problem within test, could not represent addr/path")
+		_, ok := dialer.sessions[repr]
+		require.False(t, ok, "problem within test, addr/path already present (should not call"+
+			"twice runPersistentServer for the same addr/path)")
+		go runListener(t, thisNet, serverAddr, messages, msg)
 	}
+
+	clientWg := sync.WaitGroup{}
 	runClient := func(serverAddr net.Addr, sessions int, msg string) {
 		clientWg.Add(1)
+		// run the client
 		go func() {
 			defer clientWg.Done()
-			t.Log("deleteme 1")
 			conn, err := dialer.Dial(ctx, serverAddr)
-			t.Log("deleteme 2")
-			if err != nil {
-				var appErr *quic.ApplicationError
-				require.True(t, errors.As(err, &appErr))
-				t.Logf("message: %s, is remote? %v, code: %v", appErr.ErrorMessage, appErr.Remote, appErr.ErrorCode)
-				require.FailNow(t, "deleteme")
-			}
-
-			t.Log("deleteme 3")
-			require.NoError(t, err, "failed with message %s", msg)
-			require.Len(t, dialer.sessions, sessions, "failed with message %s", msg)
-			n, err := conn.Write(([]byte)(msg))
-			t.Log("deleteme 4")
-			require.NoError(t, err, "failed with message %s", msg)
-			require.Greater(t, n, 0, "failed with message %s", msg)
-			t.Log("deleteme 5")
+			require.NoError(t, err, "failed for: %s", msg)
+			require.Len(t, dialer.sessions, sessions, "failed for: %s", msg)
+			n, err := io.WriteString(conn, msg)
+			require.NoError(t, err, "failed for: %s", msg)
+			require.Greater(t, n, 0, "failed for: %s", msg)
+			err = conn.Close()
+			require.NoError(t, err, "failed for: %s", msg)
 			select {
 			case <-ctx.Done():
 				require.FailNow(t, "timeout", "for msg %s", msg)
 			case <-messages:
 			}
-			t.Log("deleteme 6")
-			err = conn.Close()
-			t.Log("deleteme 7")
-			require.NoError(t, err, "failed with message %s", msg)
 		}()
 	}
 
 	// to 110 with scion
+	t.Log("to 110 with scion")
 	dst := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:12345",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
-	runServer(dst, "first 110")
+	runPersistentServer(dst, "server 110")
 	runClient(dst, 1, "hello 110")
-	clientWg.Wait()
-	serverWg.Wait()
+	require.NoError(t, waitWithContext(ctx, &clientWg))
 
-	// deleteme uncomment block below
-	// // to 112 with scion
-	// dst = mockScionAddressWithPath(t, "1-ff00:0:112", "127.0.0.1:12345",
-	// 	"1-ff00:0:111", 41, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112")
-	// runServer(dst, "first 112")
-	// runClient(dst, 2, "hello 112")
-	// clientWg.Wait()
-	// serverWg.Wait()
+	// to 112 with scion
+	t.Log("to 112 with scion")
+	dst = mockScionAddressWithPath(t, "1-ff00:0:112", "127.0.0.1:12345",
+		"1-ff00:0:111", 41, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112")
+	runPersistentServer(dst, "server 112")
+	runClient(dst, 2, "hello 112")
+	require.NoError(t, waitWithContext(ctx, &clientWg))
 
 	// to 110 again with several connections
-	time.Sleep(2 * time.Second)
-	thisNet.EnableDebugMessages(true)
-	// for k := range dialer.sessions {
-	// 	delete(dialer.sessions, k)
-	// }
-	dst = mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:12345",
+	t.Log("to 110 again with several connections")
+	dst = mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:30001",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
-	runServer(dst, "second 110")
-	runClient(dst, 1, "hello 110")
-	clientWg.Wait()
-	serverWg.Wait()
+	for i := 0; i < 50; i++ {
+		runClient(dst, 2, fmt.Sprintf("hello 110 again %d", i))
+	}
+	require.NoError(t, waitWithContext(ctx, &clientWg))
+}
 
-	// for p := 0; p < 1; p++ {
-	// 	dst = mockScionAddressWithPath(t, "1-ff00:0:110", fmt.Sprintf("127.0.0.1:%d", p+12345),
-	// 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
-	// 	runServer(dst)
-	// 	runClient(dst, 3+p, "hello 110")
-	// }
-	// clientWg.Wait()
-	// // wait for all servers to finish without errors
-	// serverWg.Wait()
+// TestTooManyStreams checks that the persistent quic can connect to the destination even
+// in the case when too many streams have been created for a stream.
+func TestTooManyStreams(t *testing.T) {
+	thisNet := newMockNetwork(t)
+	serverAddr := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:30001",
+		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
+	messages := make(chan string)
+	go runListener(t, thisNet, serverAddr, messages, "theserver")
+
+	clientTlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"coliquictest"},
+	}
+	dialer := NewPersistentQUIC(
+		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345"), thisNet),
+		clientTlsConfig, nil)
+
+	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelF()
+
+	conns := make([]net.Conn, 0)
+	connsM := sync.Mutex{}
+	wgClients := sync.WaitGroup{}
+	runClient := func(id int) {
+		wgClients.Add(1)
+		go func() {
+			defer wgClients.Done()
+			conn, err := dialer.Dial(ctx, serverAddr)
+			require.NoError(t, err)
+			_, err = io.WriteString(conn, "message from client")
+			require.NoError(t, err)
+
+			connsM.Lock()
+			defer connsM.Unlock()
+			conns = append(conns, conn)
+			// do not close the stream
+		}()
+	}
+	N := 5000 // 5000 simultaneous streas to the same destination
+	for i := 0; i < N; i++ {
+		runClient(i)
+	}
+	require.NoError(t, waitWithContext(ctx, &wgClients))
+	require.Len(t, dialer.sessions, 1)
+	require.Len(t, conns, N)
+	// close all connections
+	for i, c := range conns {
+		err := c.Close()
+		require.NoError(t, err, "closing connection number %d", i)
+	}
 }
 
 func TestCloseSession(t *testing.T) {
+
+}
+
+func waitWithContext(ctx context.Context, wg *sync.WaitGroup) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context deadline exceeded, server not done")
+	case <-done:
+	}
+	return nil
+}
+
+func runListener(t *testing.T, theNet *mockNetwork, serverAddr net.Addr,
+	messages chan string, serverId string) {
+
+	serverTlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{*createTestCertificate(t)},
+		NextProtos:   []string{"coliquictest"},
+	}
+	serverQuicConfig := &quic.Config{KeepAlive: true}
+	listener := NewListener(newConnMock(t, serverAddr, theNet),
+		serverTlsConfig, serverQuicConfig)
+	for {
+		conn, err := listener.Accept()
+		require.NoError(t, err, "failed for: %s", serverId)
+		buff, err := io.ReadAll(conn)
+		require.NoError(t, err, "failed for: %s", serverId)
+		msg := string(buff)
+		messages <- msg
+		err = conn.Close()
+		require.NoError(t, err)
+	}
 
 }

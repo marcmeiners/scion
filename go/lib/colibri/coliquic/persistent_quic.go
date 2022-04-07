@@ -18,12 +18,15 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/lucas-clemente/quic-go"
 	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
@@ -53,6 +56,7 @@ type PersistentQUIC struct {
 	tlsConfig  *tls.Config
 	quicConfig *quic.Config
 	sessions   map[string]quic.Session
+	sessionsM  sync.Mutex
 }
 
 func NewPersistentQUIC(pconn net.PacketConn, tlsConfig *tls.Config,
@@ -63,6 +67,7 @@ func NewPersistentQUIC(pconn net.PacketConn, tlsConfig *tls.Config,
 		tlsConfig:  tlsConfig,
 		quicConfig: quicConfig,
 		sessions:   make(map[string]quic.Session),
+		sessionsM:  sync.Mutex{},
 	}
 }
 
@@ -73,23 +78,46 @@ func (pq *PersistentQUIC) Dial(ctx context.Context, dst net.Addr) (net.Conn, err
 	if err != nil {
 		return nil, err
 	}
-	sess, ok := pq.sessions[repr]
-	if !ok {
-		var err error
-		sess, err = quic.DialContext(ctx, pq.pconn, dst, addrToSNI(dst), pq.tlsConfig, pq.quicConfig)
+	var sessionError error
+	pq.sessionsM.Lock()
+	defer pq.sessionsM.Unlock()
+	for attempts := 0; attempts < 2; attempts++ {
+		sess, ok := pq.sessions[repr]
+		if !ok {
+			var err error
+			sess, err = quic.DialContext(ctx, pq.pconn, dst, addrToSNI(dst),
+				pq.tlsConfig, pq.quicConfig)
+			if err != nil {
+				return nil, err
+			}
+			pq.sessions[repr] = sess
+		}
+		stream, err := sess.OpenStream()
 		if err != nil {
+			sessionError = err
+			var appErr *quic.ApplicationError
+			if errors.As(err, &appErr) && appErr.Remote {
+				// session closed on remote side: try to create a new session and repeat once more
+				log.Info("persistent quic, session closed at other end?", "err", err)
+				delete(pq.sessions, repr)
+				continue
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Temporary() {
+				log.Info("persistent quic, too many streams?", "err", err)
+				delete(pq.sessions, repr)
+				continue
+			}
+			log.Info("persistent quic, unhandled error", "err", err)
 			return nil, err
 		}
-		pq.sessions[repr] = sess
+
+		return streamAsConn{
+			stream:  stream,
+			session: sess,
+		}, nil
 	}
-	stream, err := sess.OpenStreamSync(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return streamAsConn{
-		stream:  stream,
-		session: sess,
-	}, nil
+	return nil, serrors.New("could not reuse or create a session", "err", sessionError)
 }
 
 // streamAsConn is a net.Conn backed by a quic stream.
