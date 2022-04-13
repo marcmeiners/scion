@@ -102,6 +102,10 @@ func TestColibriQuic(t *testing.T) {
 			listener, err := quic.Listen(newConnMock(t, tc.rcvAddr, thisNet),
 				serverTlsConfig, serverQuicConfig)
 			require.NoError(t, err)
+			defer func() {
+				err := listener.Close()
+				require.NoError(t, err)
+			}()
 
 			done := make(chan struct{})
 			ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
@@ -136,6 +140,8 @@ func TestColibriQuic(t *testing.T) {
 				require.Equal(t, "hello world", string(buff[:n]))
 				err = stream.Close()
 				require.NoError(t, err)
+				err = session.CloseWithError(0, "")
+				require.NoError(t, err)
 				done <- struct{}{}
 			}(ctx, listener)
 
@@ -163,6 +169,8 @@ func TestColibriQuic(t *testing.T) {
 				require.FailNow(t, "timed out")
 			}
 			err = stream.Close()
+			require.NoError(t, err)
+			err = session.CloseWithError(0, "")
 			require.NoError(t, err)
 		})
 	}
@@ -370,7 +378,6 @@ func TestColibriGRPC(t *testing.T) {
 	gRPCClient := colpb.NewColibriServiceClient(conn)
 	res, err := gRPCClient.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
 	require.NoError(t, err)
-	require.IsType(t, path.Colibri{}, clientAddr.(*snet.UDPAddr).Path)
 	require.Equal(t, clientAddr.(*snet.UDPAddr).Path.(path.Colibri).Raw, res.GetToken())
 	require.True(t, testInterceptorCalled)
 

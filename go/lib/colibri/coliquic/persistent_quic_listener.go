@@ -60,7 +60,10 @@ func (l *Listener) Accept() (net.Conn, error) {
 	l.listenerMux.Lock()
 	if l.listener == nil {
 		l.listener, err = quic.Listen(l.pconn, l.tlsConfig, l.quicConfig)
-		go l.acceptNewSessions()
+		go func() {
+			defer log.HandlePanic()
+			l.acceptNewSessions()
+		}()
 	}
 	l.listenerMux.Unlock()
 	if err != nil {
@@ -107,7 +110,10 @@ func (l *Listener) acceptNewSessions() {
 			l.acceptErrs <- err
 			return // the error is not recoverable
 		} else {
-			go l.acceptNewStreams(sess)
+			go func() {
+				defer log.HandlePanic()
+				l.acceptNewStreams(sess)
+			}()
 		}
 	}
 }

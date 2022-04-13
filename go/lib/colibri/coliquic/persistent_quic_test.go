@@ -59,7 +59,7 @@ func TestInvariantColibriRepresentation(t *testing.T) {
 func TestListenerManySessions(t *testing.T) {
 	wgServer := sync.WaitGroup{}
 	thisNet := newMockNetwork(t)
-	serverAddr := mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:30001")
+	serverAddr := mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:10001")
 	wgServer.Add(1)
 	messagesReceivedAtServer := make(chan string)
 	go func() {
@@ -98,7 +98,7 @@ func TestListenerManySessions(t *testing.T) {
 	// client
 	ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancelF()
-	clientAddr := mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345")
+	clientAddr := mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:1234")
 	pconn := newConnMock(t, clientAddr, thisNet)
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
@@ -193,7 +193,7 @@ func TestReuseSession(t *testing.T) {
 	}
 
 	dialer := NewPersistentQUIC(
-		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345"), thisNet),
+		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:22345"), thisNet),
 		clientTlsConfig, nil)
 	require.Len(t, dialer.sessions, 0)
 
@@ -232,7 +232,7 @@ func TestReuseSession(t *testing.T) {
 
 	// to 110 with scion
 	t.Log("to 110 with scion")
-	dst := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:12345",
+	dst := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:20001",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
 	runPersistentServer(dst, "server 110")
 	runClient(dst, 1, "hello 110")
@@ -240,7 +240,7 @@ func TestReuseSession(t *testing.T) {
 
 	// to 112 with scion
 	t.Log("to 112 with scion")
-	dst = mockScionAddressWithPath(t, "1-ff00:0:112", "127.0.0.1:12345",
+	dst = mockScionAddressWithPath(t, "1-ff00:0:112", "127.0.0.1:20002",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112")
 	runPersistentServer(dst, "server 112")
 	runClient(dst, 2, "hello 112")
@@ -248,7 +248,7 @@ func TestReuseSession(t *testing.T) {
 
 	// to 110 again with several connections
 	t.Log("to 110 again with several connections")
-	dst = mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:30001",
+	dst = mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:20003",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
 	for i := 0; i < 50; i++ {
 		runClient(dst, 2, fmt.Sprintf("hello 110 again %d", i))
@@ -270,7 +270,7 @@ func TestTooManyStreams(t *testing.T) {
 		NextProtos:         []string{"coliquictest"},
 	}
 	dialer := NewPersistentQUIC(
-		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345"), thisNet),
+		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:32345"), thisNet),
 		clientTlsConfig, nil)
 
 	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
@@ -294,7 +294,7 @@ func TestTooManyStreams(t *testing.T) {
 			// do not close the stream
 		}()
 	}
-	N := 5000 // 5000 simultaneous streas to the same destination
+	N := 5000 // 5000 simultaneous streams to the same destination
 	for i := 0; i < N; i++ {
 		runClient(i)
 	}
