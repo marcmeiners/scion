@@ -375,7 +375,8 @@ func (g *Gateway) Run(ctx context.Context) error {
 	// We know we have two subscribers, so we initialize the subscriptions right from the start.
 	// Once subscribed, publish immediately.
 	configPublisher := &control.ConfigPublisher{}
-	remoteIAsChannel := configPublisher.SubscribeRemoteIAs()
+	// remoteIAsChannel := configPublisher.SubscribeRemoteIAs()
+	sessionPoliciesChannel1 := configPublisher.SubscribeSessionPolicies()
 	sessionPoliciesChannel := configPublisher.SubscribeSessionPolicies()
 
 	configLoader := config.Loader{
@@ -507,7 +508,8 @@ func (g *Gateway) Run(ctx context.Context) error {
 		}
 	}
 	remoteMonitor := &control.RemoteMonitor{
-		IAs:                   remoteIAsChannel,
+		// IAs:                   remoteIAsChannel,
+		SessionPolicies:       sessionPoliciesChannel1,
 		RemotesMonitored:      rmMetric,
 		RemoteDiscoveryErrors: rmErrorsMetric,
 		PrefixFetchErrors:     rmPrefixErrorsMetric,

@@ -36,6 +36,7 @@ type Runner interface {
 
 type GatewayWatcherFactory interface {
 	New(context.Context, addr.IA, GatewayWatcherMetrics) Runner
+	NewStatic(context.Context, addr.IA, GatewayWatcherMetrics, []Gateway) Runner
 }
 
 // RemoteMonitor watches for currently monitored remote ASes and creates
@@ -46,7 +47,9 @@ type RemoteMonitor struct {
 	// GatewayWatcherFactory is used to create remote gateway watchers.
 	GatewayWatcherFactory GatewayWatcherFactory
 	// IAs is a channel that is notified with the full set of IAs to watch.
-	IAs <-chan []addr.IA
+	// IAs <-chan []addr.IA
+
+	SessionPolicies <-chan SessionPolicies
 	// RemotesMonitored is the number of remote gateways discovered, per ISD-AS.
 	// If nil, no metric is reported.
 	RemotesMonitored func(addr.IA) metrics.Gauge
@@ -91,8 +94,11 @@ func (rm *RemoteMonitor) setup(ctx context.Context) error {
 	if rm.GatewayWatcherFactory == nil {
 		return serrors.New("whatcher factory not specified")
 	}
-	if rm.IAs == nil {
-		return serrors.New("IAs channel not specified")
+	// if rm.IAs == nil {
+	// 	return serrors.New("IAs channel not specified")
+	// }
+	if rm.SessionPolicies == nil {
+		return serrors.New("SessionPolicies channel not specified")
 	}
 	rm.context, rm.cancel = context.WithCancel(context.Background())
 	rm.currentWatchers = make(map[addr.IA]watcherEntry)
@@ -102,8 +108,10 @@ func (rm *RemoteMonitor) setup(ctx context.Context) error {
 func (rm *RemoteMonitor) run(ctx context.Context) error {
 	for {
 		select {
-		case ias := <-rm.IAs:
-			rm.process(ctx, ias)
+		// case ias := <-rm.IAs:
+		//	rm.process(ctx, ias)
+		case sessions := <-rm.SessionPolicies:
+			rm.process(ctx, sessions)
 		case <-rm.workerBase.GetDoneChan():
 			rm.cancel()
 			return nil
@@ -111,12 +119,14 @@ func (rm *RemoteMonitor) run(ctx context.Context) error {
 	}
 }
 
-func (rm *RemoteMonitor) process(ctx context.Context, ias []addr.IA) {
+func (rm *RemoteMonitor) process(ctx context.Context, sessions SessionPolicies) {
 	rm.stateMtx.Lock()
 	defer rm.stateMtx.Unlock()
 	logger := log.FromCtx(ctx)
 	newWatchers := make(map[addr.IA]watcherEntry)
-	for _, ia := range ias {
+	for _, session := range sessions {
+		// TODO(fstreun): there can be multiple session policies with the same IA
+		ia := session.IA
 		we, ok := rm.currentWatchers[ia]
 		if ok {
 			// Watcher for the remote IA exists. Move it to the new map of
@@ -138,13 +148,36 @@ func (rm *RemoteMonitor) process(ctx context.Context, ias []addr.IA) {
 			if rm.PrefixFetchErrors != nil {
 				prefixFetchErrors = rm.PrefixFetchErrors(ia)
 			}
-			we = watcherEntry{
-				runner: rm.GatewayWatcherFactory.New(ctx, ia, GatewayWatcherMetrics{
-					Remotes:           remotesMonitored,
-					DiscoveryErrors:   discoveryErrors,
-					PrefixFetchErrors: prefixFetchErrors,
-				}),
-				cancel: cancel,
+			if session.Remote != nil {
+				fmt.Println("new static entry")
+				staticGateways := make([]Gateway, 1)
+				interfaces := make([]uint64, len(session.Remote.Interfaces))
+				copy(interfaces, session.Remote.Interfaces)
+				staticGateways[0] = Gateway{
+					Control:    session.Remote.Control,
+					Data:       session.Remote.Data,
+					Probe:      session.Remote.Probe,
+					Interfaces: interfaces,
+				}
+
+				we = watcherEntry{ // new watcher
+					runner: rm.GatewayWatcherFactory.NewStatic(ctx, ia, GatewayWatcherMetrics{
+						Remotes:           remotesMonitored,
+						DiscoveryErrors:   discoveryErrors,
+						PrefixFetchErrors: prefixFetchErrors,
+					}, staticGateways),
+					cancel: cancel,
+				}
+			} else {
+				fmt.Println("new discovery entry")
+				we = watcherEntry{
+					runner: rm.GatewayWatcherFactory.New(ctx, ia, GatewayWatcherMetrics{
+						Remotes:           remotesMonitored,
+						DiscoveryErrors:   discoveryErrors,
+						PrefixFetchErrors: prefixFetchErrors,
+					}),
+					cancel: cancel,
+				}
 			}
 			go func() {
 				defer log.HandlePanic()

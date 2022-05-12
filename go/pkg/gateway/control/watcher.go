@@ -134,6 +134,10 @@ type GatewayWatcher struct {
 	// runMarker is set to true the first time a Session runs. Subsequent calls use this value to
 	// return an error.
 	runMarker bool
+
+	// List of remote gateways which are statically defined
+	// and are not be discovered through the discovery service.
+	StaticGateways []Gateway
 }
 
 type watcherItem struct {
@@ -186,13 +190,20 @@ func (w *GatewayWatcher) run(runCtx context.Context) {
 	ctx, cancel := context.WithTimeout(runCtx, w.DiscoverTimeout)
 	defer cancel()
 	logger := log.FromCtx(ctx)
-	logger.Debug("Discovering remote gateways")
-	discovered, err := w.Discoverer.Gateways(ctx)
-	if err != nil {
-		metrics.GaugeSet(w.Metrics.Remotes, 0)
-		metrics.CounterInc(w.Metrics.DiscoveryErrors)
-		logger.Info("Failed to discover remote gateways", "err", err)
-		return
+	var discovered []Gateway
+	if len(w.StaticGateways) > 0 {
+		logger.Debug("Use statically defined remote gateways")
+		discovered = w.StaticGateways
+	} else {
+		logger.Debug("Discovering remote gateways")
+		var err error
+		discovered, err = w.Discoverer.Gateways(ctx)
+		if err != nil {
+			metrics.GaugeSet(w.Metrics.Remotes, 0)
+			metrics.CounterInc(w.Metrics.DiscoveryErrors)
+			logger.Info("Failed to discover remote gateways", "err", err)
+			return
+		}
 	}
 	w.stateMtx.Lock()
 	defer w.stateMtx.Unlock()
@@ -280,8 +291,8 @@ func (w *GatewayWatcher) diagnostics() (remoteDiagnostics, error) {
 }
 
 func (w *GatewayWatcher) validateParameters() error {
-	if w.Discoverer == nil {
-		return serrors.New("discoverer must not be nil")
+	if w.Discoverer == nil && len(w.StaticGateways) == 0 {
+		return serrors.New("discoverer must not be nil without statically defined gateways")
 	}
 	if w.DiscoverInterval == 0 {
 		w.DiscoverInterval = defaultGatewayDiscoveryInterval

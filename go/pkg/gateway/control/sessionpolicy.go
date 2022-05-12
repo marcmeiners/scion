@@ -48,6 +48,13 @@ func (LegacySessionPolicyAdapter) Parse(ctx context.Context, raw []byte) (Sessio
 		ASes map[addr.IA]struct {
 			Nets      []string
 			PathCount int
+			Remote    *struct {
+				// same format as the topology file
+				Ctrl_addr          string
+				Data_addr          string
+				Probe_addr         string
+				Allowed_interfaces []uint64
+			}
 		}
 		ConfigVersion uint64
 	}
@@ -65,6 +72,45 @@ func (LegacySessionPolicyAdapter) Parse(ctx context.Context, raw []byte) (Sessio
 		if asEntry.PathCount != 0 {
 			pathCount = asEntry.PathCount
 		}
+
+		var remote *StaticRemote
+		remote = nil
+		if asEntry.Remote != nil {
+			if asEntry.Remote.Ctrl_addr == "" {
+				return nil, serrors.New("Remote entry requires ctrl_addr field")
+			}
+			ctrl, err := net.ResolveUDPAddr("udp", asEntry.Remote.Ctrl_addr)
+			if err != nil {
+				return nil, serrors.WrapStr("parsing control address", err)
+			}
+			if asEntry.Remote.Data_addr == "" {
+				return nil, serrors.New("Remote entry requires data_addr field")
+			}
+			data, err := net.ResolveUDPAddr("udp", asEntry.Remote.Data_addr)
+			if err != nil {
+				return nil, serrors.WrapStr("parsing data address", err)
+			}
+			// if no probe address is specified just use the
+			// default (ctrl address & port 30856):
+			probe := copyUDPAddr(ctrl)
+			probe.Port = 30856
+			if asEntry.Remote.Probe_addr != "" {
+				var err error
+				probe, err = net.ResolveUDPAddr("udp", asEntry.Remote.Probe_addr)
+				if err != nil {
+					return nil, serrors.WrapStr("parsing probe address", err)
+				}
+			}
+			interfaces := make([]uint64, len(asEntry.Remote.Allowed_interfaces))
+			copy(interfaces, asEntry.Remote.Allowed_interfaces)
+			remote = &StaticRemote{
+				Control:    ctrl,
+				Probe:      probe,
+				Data:       data,
+				Interfaces: interfaces,
+			}
+		}
+
 		policies = append(policies, SessionPolicy{
 			ID:             0,
 			IA:             ia,
@@ -73,6 +119,7 @@ func (LegacySessionPolicyAdapter) Parse(ctx context.Context, raw []byte) (Sessio
 			PathPolicy:     DefaultPathPolicy,
 			PathCount:      pathCount,
 			Prefixes:       prefixes,
+			Remote:         remote,
 		})
 	}
 	return policies, nil
@@ -173,6 +220,15 @@ type SessionPolicy struct {
 	// Prefixes contains the network prefixes that are reachable through this
 	// session.
 	Prefixes []*net.IPNet
+
+	Remote *StaticRemote
+}
+
+type StaticRemote struct {
+	Control    *net.UDPAddr
+	Probe      *net.UDPAddr
+	Data       *net.UDPAddr
+	Interfaces []uint64
 }
 
 // Copy creates a deep copy.
@@ -186,6 +242,7 @@ func (sp SessionPolicy) Copy() SessionPolicy {
 		PathPolicy: copyPathPolicy(sp.PathPolicy),
 		PathCount:  sp.PathCount,
 		Prefixes:   copyPrefixes(sp.Prefixes),
+		Remote:     copyStaticRemote(sp.Remote),
 	}
 }
 
@@ -223,6 +280,32 @@ func copyPrefixes(prefixes []*net.IPNet) []*net.IPNet {
 		})
 	}
 	return copy
+}
+
+func copyUDPAddr(a *net.UDPAddr) *net.UDPAddr {
+	if a == nil {
+		return nil
+	}
+	return &net.UDPAddr{
+		IP:   append(a.IP[:0:0], a.IP...),
+		Port: a.Port,
+		Zone: a.Zone,
+	}
+}
+
+func copyStaticRemote(remote *StaticRemote) *StaticRemote {
+	if remote == nil {
+		return nil
+	}
+	interfaces := make([]uint64, len(remote.Interfaces))
+	copy(interfaces, remote.Interfaces)
+	copy := StaticRemote{
+		Control:    remote.Control,
+		Data:       remote.Data,
+		Probe:      remote.Probe,
+		Interfaces: interfaces,
+	}
+	return &copy
 }
 
 type fingerPrintOrder struct{}

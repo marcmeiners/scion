@@ -114,6 +114,32 @@ func (wf *WatcherFactory) New(
 	}
 }
 
+func (wf *WatcherFactory) NewStatic(
+	ctx context.Context,
+	remote addr.IA,
+	metrics control.GatewayWatcherMetrics,
+	gateways []control.Gateway,
+) control.Runner {
+	fmt.Println("WatcherFactory: NewStatic")
+	pather := wf.PathMonitor.Register(ctx, remote, wf.Policies, "gateway-watcher")
+	return &watcherWrapper{
+		GatewayWatcher: control.GatewayWatcher{
+			Remote:         remote,
+			StaticGateways: gateways,
+			Discoverer:     nil, // TODO(fstreun): not allowed to be nil?
+			Template: control.PrefixWatcherConfig{
+				Consumer: wf.Aggregator,
+				FetcherFactory: fetcherFactory{
+					remote: remote,
+					wf:     wf,
+				},
+			},
+			Metrics: metrics,
+		},
+		pather: pather,
+	}
+}
+
 type watcherWrapper struct {
 	control.GatewayWatcher
 	pather control.PathMonitorRegistration
