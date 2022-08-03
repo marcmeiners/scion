@@ -31,6 +31,7 @@ import (
 	"github.com/scionproto/scion/go/lib/snet/addrutil"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/pkg/app"
+	"github.com/scionproto/scion/go/pkg/app/flag"
 	"github.com/scionproto/scion/go/pkg/app/launcher"
 	"github.com/scionproto/scion/go/pkg/gateway"
 	"github.com/scionproto/scion/go/pkg/gateway/api"
@@ -51,6 +52,16 @@ func main() {
 }
 
 func realMain(ctx context.Context) error {
+	var envFlags flag.SCIONEnvironment
+	if err := envFlags.LoadExternalVars(); err != nil {
+		return err
+	}
+	dispatcher := envFlags.Dispatcher()
+
+	log.Debug("Resolved SCION environment flags",
+		"dispatcher", dispatcher,
+	)
+
 	daemonService := &daemon.Service{
 		Address: globalCfg.Daemon.Address,
 	}
@@ -139,7 +150,7 @@ func realMain(ctx context.Context) error {
 		ProbeClientIP:            controlAddress.IP,
 		DataServerAddr:           dataAddress,
 		DataClientIP:             dataAddress.IP,
-		Dispatcher:               reliable.NewDispatcher(""),
+		Dispatcher:               reliable.NewDispatcher(dispatcher),
 		Daemon:                   daemon,
 		RouteSourceIPv4:          globalCfg.Tunnel.SrcIPv4,
 		RouteSourceIPv6:          globalCfg.Tunnel.SrcIPv6,
