@@ -89,8 +89,10 @@ func TestPersistentClientWithPersistentServer(t *testing.T) {
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
 	messagesServer1 := make(chan string)
 	messagesServer2 := make(chan string)
-	go runListenerDefaultConfig(t, thisNet, server1Addr, messagesServer1, "server 1")
-	go runListenerDefaultConfig(t, thisNet, server2Addr, messagesServer2, "server 2")
+	stop1 := make(chan struct{})
+	stop2 := make(chan struct{})
+	go runListenerDefaultConfig(t, thisNet, server1Addr, messagesServer1, "server 1", stop1)
+	go runListenerDefaultConfig(t, thisNet, server2Addr, messagesServer2, "server 2", stop2)
 	runClient(server1Addr, "hello 1 from client 1")
 	runClient(server1Addr, "hello 1 from client 2")
 	runClient(server2Addr, "hello 2 from client 1")
@@ -132,6 +134,8 @@ func TestPersistentClientWithPersistentServer(t *testing.T) {
 	}
 	readMsgs(1, 2)
 	readMsgs(2, 2)
+	stop1 <- struct{}{}
+	stop2 <- struct{}{}
 }
 
 // TestListenerManySessions is a multi part test that checks the listener for proper behavior.
@@ -181,7 +185,7 @@ func TestListenerManySessions(t *testing.T) {
 		require.Error(t, err)
 	}()
 	// client
-	ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelF()
 	clientAddr := mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:1234")
 	pconn := newConnMock(t, clientAddr, thisNet)
@@ -283,14 +287,14 @@ func TestReuseSession(t *testing.T) {
 	require.Len(t, dialer.sessions, 0)
 
 	messages := make(chan string)
-	runPersistentServer := func(serverAddr net.Addr, msg string) {
+	runPersistentServer := func(serverAddr net.Addr, msg string, stopServer chan struct{}) {
 		// health of the test itself: no previous path should be present in the dialer
 		repr, err := addrToString(serverAddr)
 		require.NoError(t, err, "problem within test, could not represent addr/path")
 		_, ok := dialer.sessions[repr]
 		require.False(t, ok, "problem within test, addr/path already present (should not call"+
 			"twice runPersistentServer for the same addr/path)")
-		go runListenerDefaultConfig(t, thisNet, serverAddr, messages, msg)
+		go runListenerDefaultConfig(t, thisNet, serverAddr, messages, msg, stopServer)
 	}
 
 	clientWg := sync.WaitGroup{}
@@ -315,11 +319,12 @@ func TestReuseSession(t *testing.T) {
 		}()
 	}
 
+	stop := make(chan struct{})
 	// to 110 with scion
 	t.Log("to 110 with scion")
 	dst := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:20001",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
-	runPersistentServer(dst, "server 110")
+	runPersistentServer(dst, "server 110", stop)
 	runClient(dst, 1, "hello 110")
 	require.NoError(t, waitWithContext(ctx, &clientWg))
 
@@ -327,7 +332,7 @@ func TestReuseSession(t *testing.T) {
 	t.Log("to 112 with scion")
 	dst = mockScionAddressWithPath(t, "1-ff00:0:112", "127.0.0.1:20002",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112")
-	runPersistentServer(dst, "server 112")
+	runPersistentServer(dst, "server 112", stop)
 	runClient(dst, 2, "hello 112")
 	require.NoError(t, waitWithContext(ctx, &clientWg))
 
@@ -339,6 +344,8 @@ func TestReuseSession(t *testing.T) {
 		runClient(dst, 2, fmt.Sprintf("hello 110 again %d", i))
 	}
 	require.NoError(t, waitWithContext(ctx, &clientWg))
+	stop <- struct{}{}
+	stop <- struct{}{}
 }
 
 // TestTooManyStreams checks that the persistent quic can connect to the destination even
@@ -353,7 +360,8 @@ func TestTooManyStreams(t *testing.T) {
 		KeepAlive:          true,
 		MaxIncomingStreams: maxIncomingStreams,
 	}
-	go runListenerWithConfig(t, thisNet, serverAddr, messages, "theserver", serverQuicConfig)
+	stop := make(chan struct{})
+	go runListenerWithConfig(t, thisNet, serverAddr, messages, "theserver", serverQuicConfig, stop)
 
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
@@ -363,7 +371,7 @@ func TestTooManyStreams(t *testing.T) {
 		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:32345"), thisNet),
 		clientTlsConfig, nil)
 
-	ctx, cancelF := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelF()
 
 	conns := make([]net.Conn, 0)
@@ -420,6 +428,7 @@ func TestTooManyStreams(t *testing.T) {
 		err := c.Close()
 		require.NoError(t, err, "closing connection number %d", i)
 	}
+	stop <- struct{}{}
 }
 
 func TestCloseSession(t *testing.T) {
@@ -432,7 +441,8 @@ func TestCloseSession(t *testing.T) {
 		KeepAlive:          true,
 		MaxIncomingStreams: maxIncomingStreams,
 	}
-	go runListenerWithConfig(t, thisNet, serverAddr, messages, "theserver", serverQuicConfig)
+	stop := make(chan struct{})
+	go runListenerWithConfig(t, thisNet, serverAddr, messages, "theserver", serverQuicConfig, stop)
 
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
@@ -442,7 +452,7 @@ func TestCloseSession(t *testing.T) {
 		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.122:32345"), thisNet),
 		clientTlsConfig, nil)
 
-	ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelF()
 
 	mu := sync.Mutex{}
@@ -470,11 +480,14 @@ func TestCloseSession(t *testing.T) {
 		}()
 	}
 
-	N := 50 // 5000 simultaneous streams to the same destination
+	N := 50 // 50 simultaneous streams to the same destination
 	for i := 0; i < N; i++ {
 		runClient(i)
 	}
 	wgClients.Wait()
+	for i := 0; i < N; i++ {
+		_ = readChannel(t, ctx, messages)
+	}
 
 	type contexter interface {
 		Context() context.Context
@@ -508,6 +521,7 @@ func TestCloseSession(t *testing.T) {
 		_, err := c.Write([]byte("1"))
 		require.Error(t, err)
 	}
+	stop <- struct{}{}
 }
 
 func waitWithContext(ctx context.Context, wg *sync.WaitGroup) error {
@@ -524,20 +538,35 @@ func waitWithContext(ctx context.Context, wg *sync.WaitGroup) error {
 	return nil
 }
 
+func readChannel(t *testing.T, ctx context.Context, ch chan string) string {
+	var str string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		str = <-ch
+	}()
+	select {
+	case <-ctx.Done():
+		require.Fail(t, "context deadline exceeded")
+	case <-done:
+	}
+	return str
+}
+
 func runListenerDefaultConfig(t *testing.T, theNet *mockNetwork, serverAddr net.Addr,
-	messages chan string, serverId string) {
+	messages chan string, serverId string, stopServer chan struct{}) {
 
 	defaultQuicConfig := &quic.Config{
 		KeepAlive: true,
 	}
-	runListenerWithConfig(t, theNet, serverAddr, messages, serverId, defaultQuicConfig)
+	runListenerWithConfig(t, theNet, serverAddr, messages, serverId, defaultQuicConfig, stopServer)
 }
 
 // runListenerWithConfig continuously accepts connections and spawns a new routine
 // to read from each new connection. It will close the connection once it reads EOF.
 // Each message read is copied to the string channel.
 func runListenerWithConfig(t *testing.T, theNet *mockNetwork, serverAddr net.Addr,
-	messages chan string, serverId string, config *quic.Config) {
+	messages chan string, serverId string, config *quic.Config, stopServer chan struct{}) {
 
 	serverTlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{*createTestCertificate(t)},
@@ -546,28 +575,39 @@ func runListenerWithConfig(t *testing.T, theNet *mockNetwork, serverAddr net.Add
 
 	listener := NewListener(newConnMock(t, serverAddr, theNet),
 		serverTlsConfig, config)
-	for {
-		conn, err := listener.Accept()
-		require.NoError(t, err, "failed for: %s", serverId)
-
-		go func() {
-			var buff [16384]byte
-			for {
-				n, err := conn.Read(buff[:])
-				msg := string(buff[:n])
-				if err == io.EOF {
-					// close stream
-					err = conn.Close()
-					require.NoError(t, err)
-					messages <- msg
-					break
-				}
-				// TODO(juagargi) this is flaky: sometimes it will receive an application error
-				// because the other end has closed the stream/session
-				require.NoError(t, err, "failed for: %s", serverId)
-				require.Greater(t, n, 0, "failed for: %s", serverId)
-				messages <- msg
+	stopRequested := false
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if stopRequested {
+				return
 			}
-		}()
-	}
+			require.NoError(t, err, "failed for: %s", serverId)
+
+			go func() {
+				var buff [16384]byte
+				for {
+					n, err := conn.Read(buff[:])
+					msg := string(buff[:n])
+					if err == io.EOF {
+						// close stream
+						err = conn.Close()
+						require.NoError(t, err)
+						if n > 0 {
+							messages <- msg
+						}
+						break
+					}
+					require.NoError(t, err, "failed for: %s", serverId)
+					require.Greater(t, n, 0, "failed for: %s", serverId)
+					messages <- msg
+				}
+			}()
+		}
+	}()
+
+	<-stopServer
+	stopRequested = true
+	err := listener.Close()
+	require.NoError(t, err)
 }

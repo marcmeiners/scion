@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -151,7 +152,12 @@ type streamAsConn struct {
 }
 
 func (c streamAsConn) Read(b []byte) (int, error) {
-	return c.stream.Read(b)
+	n, err := c.stream.Read(b)
+	var appErr *quic.ApplicationError
+	if err != nil && errors.As(err, &appErr) && appErr.ErrorCode == 0 {
+		return 0, io.EOF
+	}
+	return n, err
 }
 
 func (c streamAsConn) Write(b []byte) (int, error) {
