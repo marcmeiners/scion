@@ -54,7 +54,6 @@ func NewListener(pconn net.PacketConn, tlsConfig *tls.Config, quicConfig *quic.C
 // out of it.
 // Accept is typically called in a Loop.
 func (l *Listener) Accept() (net.Conn, error) {
-	// TODO(juagargi) Accept should receive a ctx.
 	// create a listener only once. Cannot use sync.Once as we want to return immediately if
 	// quic.Listen returned an error, and at the same time in this case, would want
 	// to cancel the sync.Once.
