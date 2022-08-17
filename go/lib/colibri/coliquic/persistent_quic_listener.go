@@ -128,11 +128,14 @@ func (l *Listener) acceptNewStreams(sess quic.Session) {
 		stream, err := sess.AcceptStream(context.Background())
 		if err != nil {
 			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				// TODO(juagargi) too many messages like "timeout: no recent network activity""
-				log.Debug("error listening for new streams, session closed?", "err", err)
+			// timeout errors are very common: if the other end times out or this end does,
+			// the connection is closed.
+			// Log other times of error
+			if !errors.As(err, &netErr) || !netErr.Timeout() {
+				log.Debug("error listening for new streams", "err", err)
 			}
-			return // exit the function, regardless of the error
+			// exit the function, regardless of the error
+			return
 		}
 		conn := &streamAsConn{
 			stream:  stream,
