@@ -54,7 +54,7 @@ type TopoLoader interface {
 //   measure the BW used by the services).
 type ServiceClientOperator struct {
 	gRPCDialer           grpc.Dialer
-	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per interface ID
+	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per egress interface ID
 	neighboringColSvcsMu sync.Mutex
 	neighboringIAs       map[uint16]addr.IA
 	srvResolver          ColSrvResolver
@@ -73,10 +73,9 @@ func NewServiceClientOperator(topo TopoLoader, pconn net.PacketConn, router snet
 	gRPCDialer := &grpc.QUICDialer{
 		Dialer: connDialer,
 		Rewriter: &messenger.AddressRewriter{
-			// Use the local Daemon to construct paths to the target AS.
-			Router: router,
 			// We never resolve addresses in the local AS, so pass a nil here.
 			SVCRouter:             nil,
+			Router:                router,
 			Resolver:              resolver,
 			SVCResolutionFraction: 1.337,
 		},

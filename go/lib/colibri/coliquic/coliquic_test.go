@@ -41,144 +41,18 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
-	"github.com/scionproto/scion/go/lib/snet/mock_snet"
 	"github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/snet/squic"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/lib/xtest"
 	sgrpc "github.com/scionproto/scion/go/pkg/grpc"
-	"github.com/scionproto/scion/go/pkg/grpc/mock_grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	mock_col "github.com/scionproto/scion/go/pkg/proto/colibri/mock_colibri"
 )
 
-// TestColibriQuic creates a server and a client, both with SCION-COLIBRI addresses and paths,
-// and communicates both via a quic connection.
-// The test also checks the ability of QUIC to receive packets destined to a different address
-// that the one it is listening to (e.g. our BR forwards colibri packets with C=1 to the
-// local colibri service instead of the destination). This part of the test is left here for
-// future reference, although it doesn't test anything from our codebase.
-func TestColibriQuic(t *testing.T) {
-	// TODO(juagargi) remove this test as it's superseded by TestQUICMultipleConnections
-	testCases := map[string]struct {
-		// XXX(juagargi) port numbers must be different on each test
-		clientAddr net.Addr // packets sent from here
-		dstAddr    net.Addr // packets originally sent to here
-		rcvAddr    net.Addr // packets end up here. If empty, dstAddr will be used
-	}{
-		"scion_no_routing": {
-			clientAddr: mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12345"),
-			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43211"),
-		},
-		"scion_one_transit": {
-			clientAddr: mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:12346"),
-			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43212"),
-			rcvAddr:    mockScionAddress(t, "1-ff00:0:110", "127.0.0.2:43212"),
-		},
-		"colibri_no_routing": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:12347"),
-			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43213"),
-		},
-		"colibri_one_transit": {
-			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:12348"),
-			dstAddr:    mockScionAddress(t, "1-ff00:0:112", "127.0.0.1:43214"),
-			rcvAddr:    mockScionAddress(t, "1-ff00:0:110", "127.0.0.2:43214"),
-		},
-	}
-	for name, tc := range testCases {
-		name, tc := name, tc
-		t.Run(name, func(t *testing.T) {
-			t.Parallel() // we are not really using sockets -> no bind clashes
-			if tc.rcvAddr == nil {
-				tc.rcvAddr = tc.dstAddr
-			}
-			thisNet := newMockNetwork(t, tc.dstAddr, tc.rcvAddr)
-			// server:
-			serverTlsConfig := &tls.Config{
-				Certificates: []tls.Certificate{*createTestCertificate(t)},
-				NextProtos:   []string{"coliquictest"},
-			}
-			serverQuicConfig := &quic.Config{KeepAlive: true}
-			listener, err := quic.Listen(newConnMock(t, tc.rcvAddr, thisNet),
-				serverTlsConfig, serverQuicConfig)
-			require.NoError(t, err)
-			defer func() {
-				err := listener.Close()
-				require.NoError(t, err)
-			}()
-
-			done := make(chan struct{})
-			ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancelF()
-			go func(ctx context.Context, listener quic.Listener) {
-				session, err := listener.Accept(ctx)
-				require.NoError(t, err)
-
-				// check the local address
-				require.Equal(t, tc.rcvAddr.String(), session.LocalAddr().String())
-
-				// check if the path used is colibri
-				colPath, err := GetColibriPath(session)
-				require.NoError(t, err)
-				clientPath := tc.clientAddr.(*snet.UDPAddr).Path
-				if _, ok := clientPath.(path.Colibri); ok {
-					// if it is colibri, check it is the same as the one used originally
-					// at the source by comparing their bytes
-					buff := make([]byte, colPath.Len())
-					err = colPath.SerializeTo(buff)
-					require.NoError(t, err)
-					require.Equal(t, clientPath.(path.Colibri).Raw, buff)
-				} else {
-					require.Nil(t, colPath)
-				}
-
-				stream, err := session.AcceptStream(ctx)
-				require.NoError(t, err)
-				buff := make([]byte, 16384)
-				n, err := stream.Read(buff)
-				require.NoError(t, err)
-				require.Equal(t, "hello world", string(buff[:n]))
-				err = stream.Close()
-				require.NoError(t, err)
-				err = session.CloseWithError(0, "")
-				require.NoError(t, err)
-				done <- struct{}{}
-			}(ctx, listener)
-
-			// client:
-			clientTlsConfig := &tls.Config{
-				InsecureSkipVerify: true,
-				NextProtos:         []string{"coliquictest"},
-			}
-			clientQuicConfig := &quic.Config{KeepAlive: true}
-
-			ctx2, cancelF2 := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancelF2()
-			session, err := quic.DialContext(ctx2, newConnMock(t, tc.clientAddr, thisNet),
-				tc.dstAddr, "serverName", clientTlsConfig, clientQuicConfig)
-			require.NoError(t, err)
-			stream, err := session.OpenStream()
-			require.NoError(t, err)
-			n, err := stream.Write([]byte("hello world"))
-			require.NoError(t, err)
-			require.Equal(t, len("hello wold")+1, n)
-
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				require.FailNow(t, "timed out")
-			}
-			err = stream.Close()
-			require.NoError(t, err)
-			err = session.CloseWithError(0, "")
-			require.NoError(t, err)
-		})
-	}
-}
-
 // TestQUICMultipleConnections tests that a single QUIC listener is able to receive packets
 // destined to it, as well as destined to another host but captured by the network.
-// This test is useful to asses that our colibri service will be able to serve requests
+// This test is useful to check that our colibri service will be able to serve requests
 // when it is the destination AS, as well as when it is a transit AS.
 // The listener will receive messages via COLIBRI paths and regular SCION.
 func TestQUICMultipleConnections(t *testing.T) {
@@ -389,109 +263,14 @@ func TestColibriGRPC(t *testing.T) {
 	}
 }
 
-// TestClient ensures that the client works as expected.
-// Namely, it tests that there is only one quic session per neighbor opened at all times,
-// even when dialing a destination that is not a direct neighbor.
-// e.g. with the tiny topology, when located at ff00:0:111, and
-// dialing ff00:0:112 there should only be one session opened to ff00:0:110 .
-func TestClient(t *testing.T) {
-	t.Skip("deleteme enable this test")
-	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
-	defer cancelF()
-	// the path to use for all tests:
-	path111to112 := test.NewPath(0, "1-ff00:0:111", 10, 1, "1-ff00:0:110", 2, 20, "1-ff00:0:112", 0)
-	// mock topology loader and router
-	topo := MockTopoLoader{}
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	router := mock_snet.NewMockRouter(ctrl)
-	router.EXPECT().Route(gomock.Any(), gomock.Any()).AnyTimes().
-		Return(test.NewSnetPath("1-ff00:0:111", 10, 1, "1-ff00:0:110"), nil)
-	// because we will prefill the neighbor entries, the connection is only used
-	// for GRPC to actually perform the RPC via NewColibriServiceClient
-	serverAddr := &snet.UDPAddr{
-		IA:      xtest.MustParseIA("1-ff00:0:110"),
-		Host:    xtest.MustParseUDPAddr(t, "127.0.0.1:12345"),
-		NextHop: xtest.MustParseUDPAddr(t, "127.0.0.1:30200"), // address of BR, never used
-	}
-	thisNet := newMockNetwork(t)
-	pconn := newConnMock(t, serverAddr, thisNet)
-	conn := mock_grpc.NewMockDialer(ctrl)
-	conn.EXPECT().Dial(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
-		func(_ context.Context, addr net.Addr) (*grpc.ClientConn, error) {
-			require.IsType(t, &snet.UDPAddr{}, addr)
-			require.Equal(t, serverAddr, addr)
-
-			// client:
-			clientAddr := mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:12346")
-			clientTlsConfig := &tls.Config{
-				InsecureSkipVerify: true,
-				NextProtos:         []string{"coliquicgrpc"},
-			}
-			clientQuicConfig := &quic.Config{KeepAlive: true}
-			connDial := squic.ConnDialer{
-				Conn:       newConnMock(t, clientAddr, thisNet),
-				TLSConfig:  clientTlsConfig,
-				QUICConfig: clientQuicConfig,
-			}
-			quicConn, err := connDial.Dial(ctx, serverAddr)
-			require.NoError(t, err)
-
-			dialer := func(context.Context, string) (net.Conn, error) {
-				return quicConn, nil
-			}
-			// var deleteme *grpc.ClientConn
-			// deleteme.
-			return grpc.DialContext(ctx, addr.String(), grpc.WithInsecure(),
-				grpc.WithContextDialer(dialer))
-		})
-	_ = conn
-
-	ope, err := NewServiceClientOperator(topo, pconn, router, nil)
-	require.NoError(t, err)
-	// time.Sleep(3 * time.Second)
-	ope.neighborsMutex.Lock()
-	ope.neighbors[10] = serverAddr
-	ope.neighborsMutex.Unlock()
-
-	// RPC to direct neighbor 110
-	path111to112.CurrentStep = 0
-	client1, err := ope.ColibriClient(ctx, path111to112)
-	require.NoError(t, err)
-	// for {
-	// 	select {
-
-	// 	}
-	// }
-	_, err = client1.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
-	require.NoError(t, err)
-
-	// RPC to indirect neighbor 112
-	path111to112.CurrentStep = 1
-	client2, err := ope.ColibriClient(ctx, path111to112)
-	require.NoError(t, err)
-	_, err = client2.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
-	require.NoError(t, err)
-
-	// check again to direct neighbor
-	_, err = client1.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
-	require.NoError(t, err)
-}
-
 type MockTopoLoader struct{}
 
 func (MockTopoLoader) InterfaceIDs() []uint16 {
-	// return []uint16{10}
 	return nil
 }
 
 func (topo MockTopoLoader) InterfaceInfoMap() map[common.IFIDType]topology.IFInfo {
 	return nil
-	// return map[common.IFIDType]topology.IFInfo{
-	// 	1: {
-	// 		IA: xtest.MustParseIA("1-ff00:0:110"),
-	// 	},
-	// }
 }
 
 // mockNetwork is used to simulate a network, where packets are sent and read.
