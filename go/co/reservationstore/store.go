@@ -1818,7 +1818,7 @@ func (s *Store) obtainRsvs(ctx context.Context, src, dst addr.IA, pathType reser
 		}
 		return reservationsToLooks(segs, s.localIA), nil
 	}
-	client, err := s.operator.DialSvcCOL(ctx, &src)
+	client, err := s.operator.ColibriClientForIA(ctx, &src)
 	if err != nil {
 		return nil, serrors.WrapStr("dialing to list reservations from remote to remote", err,
 			"src", src.String(), "dst", dst.String())

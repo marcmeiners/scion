@@ -41,6 +41,7 @@ import (
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
 	"github.com/scionproto/scion/go/lib/svc"
+	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 )
 
 // GetColibriPath returns the (last) COLIBRI path used with this quic Session, or nil if none.
@@ -83,6 +84,7 @@ type ServerStack struct {
 	Daemon           daemon.Connector
 	Router           snet.Router
 	ClientPacketConn net.PacketConn
+	Dialer           *libgrpc.QUICDialer
 	Resolver         messenger.Resolver
 	QUICListener     net.Listener
 	TCPListener      net.Listener
@@ -134,6 +136,7 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, daemon
 	if err != nil {
 		return err
 	}
+
 	s.Resolver = &svc.Resolver{
 		LocalIA: s.serverAddr.IA,
 		// Reuse the network with SCMP error support.
@@ -141,12 +144,31 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, daemon
 		LocalIP:     s.serverAddr.Host.IP,
 	}
 
-	rawListener, err := quic.Listen(server, ephemeralTLSConfig, nil)
-	if err != nil {
-		return err
+	quicClientDialer := &squic.ConnDialer{
+		Conn:      client,
+		TLSConfig: ephemeralTLSConfig,
 	}
-	s.QUICListener = NewConnListener(rawListener)
+	s.Dialer = &libgrpc.QUICDialer{
+		Dialer: quicClientDialer,
+		Rewriter: &messenger.AddressRewriter{
+			// Use the local Daemon to construct paths to the target AS.
+			Router: s.Router,
+			// We never resolve addresses in the local AS, so pass a nil here.
+			SVCRouter: nil,
+			Resolver: &svc.Resolver{
+				LocalIA: s.serverAddr.IA,
+				// Reuse the network with SCMP error support.
+				ConnFactory: s.clientNet.Dispatcher,
+				LocalIP:     s.serverAddr.Host.IP,
+			},
+			SVCResolutionFraction: 1.337,
+		},
+	}
 
+	config := &quic.Config{
+		KeepAlive: false, // TODO(juagargi) study if it'd be more performant to keep alive
+	}
+	s.QUICListener = NewListener(server, ephemeralTLSConfig, config)
 	return nil
 }
 

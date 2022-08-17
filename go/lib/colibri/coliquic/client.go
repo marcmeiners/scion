@@ -35,7 +35,6 @@ import (
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/pkg/grpc"
-	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	dpb "github.com/scionproto/scion/go/pkg/proto/discovery"
 )
@@ -63,20 +62,15 @@ type ServiceClientOperator struct {
 	colServicesMutex     sync.Mutex
 }
 
-func NewServiceClientOperator(
-	topo TopoLoader,
-	pconn net.PacketConn,
-	router snet.Router,
-	resolver messenger.Resolver) (
-	*ServiceClientOperator, error) {
+func NewServiceClientOperator(topo TopoLoader, pconn net.PacketConn, router snet.Router,
+	resolver messenger.Resolver) (*ServiceClientOperator, error) {
 
 	tlsConfig, err := infraenv.GenerateTLSConfig()
 	if err != nil {
 		return nil, err
 	}
 	connDialer := NewPersistentQUIC(pconn, tlsConfig, nil)
-
-	gRPCDialer := &libgrpc.QUICDialer{
+	gRPCDialer := &grpc.QUICDialer{
 		Dialer: connDialer,
 		Rewriter: &messenger.AddressRewriter{
 			// Use the local Daemon to construct paths to the target AS.
@@ -89,11 +83,11 @@ func NewServiceClientOperator(
 	}
 
 	operator := &ServiceClientOperator{
-		gRPCDialer:         gRPCDialer,
+		gRPCDialer:         gRPCDialer, // persistent dialer
 		neighboringColSvcs: make(map[uint16]*snet.UDPAddr, len(topo.InterfaceIDs())),
 		srvResolver: &DiscoveryColSrvRes{
 			Router:     router,
-			GRPCDialer: gRPCDialer,
+			GRPCDialer: gRPCDialer, // persistent dialer
 		},
 		colServices: make(map[addr.IA]*snet.UDPAddr),
 	}
@@ -107,7 +101,7 @@ func (o *ServiceClientOperator) Neighbor(interfaceID uint16) addr.IA {
 	return o.neighboringIAs[interfaceID]
 }
 
-func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
+func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *addr.IA) (
 	colpb.ColibriServiceClient, error) {
 
 	o.colServicesMutex.Lock()
@@ -122,13 +116,7 @@ func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
 		}
 		o.colServices[*dst] = addr
 	}
-
-	conn, err := o.gRPCDialer.Dial(ctx, addr)
-	if err != nil {
-		log.Debug("error dialing a grpc connection", "addr", addr, "err", err)
-		return nil, err
-	}
-	return colpb.NewColibriServiceClient(conn), nil
+	return o.colibriClient(ctx, addr)
 }
 
 // ColibriClient finds or creates a ColibriClient that can reach the next neighbor in
@@ -163,10 +151,15 @@ func (o *ServiceClientOperator) ColibriClient(
 		// E2EReservations must eventually travel through colibri path
 		// In that case they will follow same logic as above
 	}
+	return o.colibriClient(ctx, rAddr)
+}
 
-	conn, err := o.gRPCDialer.Dial(ctx, rAddr)
+func (o *ServiceClientOperator) colibriClient(ctx context.Context, addr *snet.UDPAddr) (
+	colpb.ColibriServiceClient, error) {
+
+	conn, err := o.gRPCDialer.Dial(ctx, addr)
 	if err != nil {
-		log.Debug("error dialing a grpc connection", "addr", rAddr, "err", err)
+		log.Info("error dialing a grpc connection", "addr", addr, "err", err)
 		return nil, err
 	}
 	return colpb.NewColibriServiceClient(conn), nil
@@ -345,7 +338,7 @@ func (r *DiscoveryColSrvRes) ResolveColibriService(ctx context.Context, ia *addr
 	}
 	defer conn.Close()
 	client := dpb.NewDiscoveryServiceClient(conn)
-	rep, err := client.ColibriServices(ctx, &dpb.ColibriServicesRequest{}, libgrpc.RetryProfile...)
+	rep, err := client.ColibriServices(ctx, &dpb.ColibriServicesRequest{})
 	if err != nil {
 		return nil, serrors.WrapStr("discovering colibri services", err)
 	}

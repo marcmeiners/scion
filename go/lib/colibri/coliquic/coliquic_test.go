@@ -186,12 +186,12 @@ func TestQUICMultipleConnections(t *testing.T) {
 	testCases := map[string]struct {
 		clientAddr net.Addr
 		serverAddr net.Addr   // where the service is listening
-		messages   []net.Addr // destination addresses of each request/message
+		messagesTo []net.Addr // destination addresses of each request/message
 	}{
 		"dest_two_msgs": {
 			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:11111"),
 			serverAddr: mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31010"),
-			messages: []net.Addr{
+			messagesTo: []net.Addr{
 				// 1: same as server
 				mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31010"),
 				// 2: same as server
@@ -201,7 +201,7 @@ func TestQUICMultipleConnections(t *testing.T) {
 		"transit_two_msgs": {
 			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:11112"),
 			serverAddr: mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31011"),
-			messages: []net.Addr{
+			messagesTo: []net.Addr{
 				// 1: destination COL SRV at 112
 				mockScionAddress(t, "1-ff00:0:112", "127.0.0.2:31011"),
 				// 2: destination COL SRV at 112
@@ -211,7 +211,7 @@ func TestQUICMultipleConnections(t *testing.T) {
 		"mix_three_msgs": {
 			clientAddr: mockColibriAddress(t, "1-ff00:0:111", "127.0.0.1:11113"),
 			serverAddr: mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:31012"),
-			messages: []net.Addr{
+			messagesTo: []net.Addr{
 				// 1: destination COL SRV at 112
 				mockScionAddress(t, "1-ff00:0:112", "127.0.0.2:31012"),
 				// 2: same as server
@@ -227,7 +227,7 @@ func TestQUICMultipleConnections(t *testing.T) {
 			t.Parallel()
 			// prepare the routing for the mock network: all intended destinataries go to server
 			fwdEntries := make([]net.Addr, 0)
-			for _, dstAddr := range tc.messages {
+			for _, dstAddr := range tc.messagesTo {
 				fwdEntries = append(fwdEntries, dstAddr, tc.serverAddr)
 			}
 			thisNet := newMockNetwork(t, fwdEntries...)
@@ -245,7 +245,7 @@ func TestQUICMultipleConnections(t *testing.T) {
 			go func(listener quic.Listener) {
 				ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancelF()
-				for i := 0; i < len(tc.messages); i++ {
+				for i := 0; i < len(tc.messagesTo); i++ {
 					session, err := listener.Accept(ctx)
 					require.NoError(t, err)
 					stream, err := session.AcceptStream(ctx)
@@ -269,7 +269,7 @@ func TestQUICMultipleConnections(t *testing.T) {
 			clientQuicConfig := &quic.Config{KeepAlive: true}
 			ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancelF()
-			for i, dstAddr := range tc.messages {
+			for i, dstAddr := range tc.messagesTo {
 				session, err := quic.DialContext(ctx, conn, dstAddr, "serverName", clientTlsConfig, clientQuicConfig)
 				require.NoError(t, err)
 				stream, err := session.OpenStream()
@@ -447,16 +447,16 @@ func TestClient(t *testing.T) {
 		})
 	_ = conn
 
-	oprtr, err := NewServiceClientOperator(topo, pconn, router, nil)
+	ope, err := NewServiceClientOperator(topo, pconn, router, nil)
 	require.NoError(t, err)
 	// time.Sleep(3 * time.Second)
-	oprtr.neighborsMutex.Lock()
-	oprtr.neighbors[10] = serverAddr
-	oprtr.neighborsMutex.Unlock()
+	ope.neighborsMutex.Lock()
+	ope.neighbors[10] = serverAddr
+	ope.neighborsMutex.Unlock()
 
 	// RPC to direct neighbor 110
 	path111to112.CurrentStep = 0
-	client1, err := oprtr.ColibriClient(ctx, path111to112)
+	client1, err := ope.ColibriClient(ctx, path111to112)
 	require.NoError(t, err)
 	// for {
 	// 	select {
@@ -468,7 +468,7 @@ func TestClient(t *testing.T) {
 
 	// RPC to indirect neighbor 112
 	path111to112.CurrentStep = 1
-	client2, err := oprtr.ColibriClient(ctx, path111to112)
+	client2, err := ope.ColibriClient(ctx, path111to112)
 	require.NoError(t, err)
 	_, err = client2.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
 	require.NoError(t, err)

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +51,89 @@ func TestInvariantColibriRepresentation(t *testing.T) {
 	require.Equal(t, repr1, repr2)
 }
 
+// TestPersistentClientWithPersistentServer creates a persistent server and a persistent client
+// and uses them at the same time.
+func TestPersistentClientWithPersistentServer(t *testing.T) {
+	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelF()
+	thisNet := newMockNetwork(t)
+
+	clientTlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"coliquictest"},
+	}
+	dialer := NewPersistentQUIC(
+		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:26345"), thisNet),
+		clientTlsConfig, nil)
+	require.Len(t, dialer.sessions, 0)
+
+	clientWg := sync.WaitGroup{}
+	runClient := func(serverAddr net.Addr, msg string) {
+		clientWg.Add(1)
+		// run the client
+		go func() {
+			defer clientWg.Done()
+			conn, err := dialer.Dial(ctx, serverAddr)
+			require.NoError(t, err, "failed for: %s", msg)
+			n, err := io.WriteString(conn, msg)
+			require.NoError(t, err, "failed for: %s", msg)
+			require.Greater(t, n, 0, "failed for: %s", msg)
+			err = conn.Close()
+			require.NoError(t, err, "failed for: %s", msg)
+		}()
+	}
+
+	server1Addr := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.111:20001",
+		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
+	server2Addr := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.111:20002",
+		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
+	messagesServer1 := make(chan string)
+	messagesServer2 := make(chan string)
+	go runListenerDefaultConfig(t, thisNet, server1Addr, messagesServer1, "server 1")
+	go runListenerDefaultConfig(t, thisNet, server2Addr, messagesServer2, "server 2")
+	runClient(server1Addr, "hello 1 from client 1")
+	runClient(server1Addr, "hello 1 from client 2")
+	runClient(server2Addr, "hello 2 from client 1")
+	runClient(server2Addr, "hello 2 from client 2")
+	require.NoError(t, waitWithContext(ctx, &clientWg))
+	// read the messages from the clients
+	readMsgs := func(serverNumber int, clientCount int) {
+		// this function will read the appropriate channel depending on the serverNumber, and
+		// will check that exactly clientCount distinct valid messages are read.
+		var ch chan string
+		switch serverNumber {
+		case 1:
+			ch = messagesServer1
+		case 2:
+			ch = messagesServer2
+		default:
+			require.FailNow(t, "bad test")
+		}
+
+		messages := make(map[string]struct{})
+		for i := 0; i < clientCount; i++ {
+			select {
+			case <-ctx.Done():
+				require.FailNow(t, "timeout for msg")
+			case msg := <-ch:
+				parts := strings.Split(msg, " ")
+				require.Equal(t, parts[0], "hello")
+				require.Equal(t, parts[1], strconv.Itoa(serverNumber))
+				require.Equal(t, parts[2], "from")
+				require.Equal(t, parts[3], "client")
+				idx, err := strconv.Atoi(parts[4])
+				require.NoError(t, err)
+				require.Greater(t, idx, 0)
+				require.LessOrEqual(t, idx, clientCount)
+				require.NotContains(t, messages, msg)
+				messages[msg] = struct{}{}
+			}
+		}
+	}
+	readMsgs(1, 2)
+	readMsgs(2, 2)
+}
+
 // TestListenerManySessions is a multi part test that checks the listener for proper behavior.
 // - part 1 tests listening without any sessions yet.
 // - part 2 reuses the previous session
@@ -62,7 +147,7 @@ func TestListenerManySessions(t *testing.T) {
 	serverAddr := mockScionAddress(t, "1-ff00:0:110", "127.0.0.1:10001")
 	wgServer.Add(1)
 	messagesReceivedAtServer := make(chan string)
-	go func() {
+	go func() { // server
 		defer wgServer.Done()
 		pconn := newConnMock(t, serverAddr, thisNet)
 		serverTlsConfig := &tls.Config{
@@ -199,13 +284,13 @@ func TestReuseSession(t *testing.T) {
 
 	messages := make(chan string)
 	runPersistentServer := func(serverAddr net.Addr, msg string) {
-		// health of the test itself: no previous path should be pressent in the dialer
+		// health of the test itself: no previous path should be present in the dialer
 		repr, err := addrToString(serverAddr)
 		require.NoError(t, err, "problem within test, could not represent addr/path")
 		_, ok := dialer.sessions[repr]
 		require.False(t, ok, "problem within test, addr/path already present (should not call"+
 			"twice runPersistentServer for the same addr/path)")
-		go runListener(t, thisNet, serverAddr, messages, msg)
+		go runListenerDefaultConfig(t, thisNet, serverAddr, messages, msg)
 	}
 
 	clientWg := sync.WaitGroup{}
@@ -248,7 +333,7 @@ func TestReuseSession(t *testing.T) {
 
 	// to 110 again with several connections
 	t.Log("to 110 again with several connections")
-	dst = mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:20003",
+	dst = mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:20001",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
 	for i := 0; i < 50; i++ {
 		runClient(dst, 2, fmt.Sprintf("hello 110 again %d", i))
@@ -259,11 +344,16 @@ func TestReuseSession(t *testing.T) {
 // TestTooManyStreams checks that the persistent quic can connect to the destination even
 // in the case when too many streams have been created for a stream.
 func TestTooManyStreams(t *testing.T) {
+	const maxIncomingStreams = 1000
 	thisNet := newMockNetwork(t)
 	serverAddr := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.1:30001",
 		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
 	messages := make(chan string)
-	go runListener(t, thisNet, serverAddr, messages, "theserver")
+	serverQuicConfig := &quic.Config{
+		KeepAlive:          true,
+		MaxIncomingStreams: maxIncomingStreams,
+	}
+	go runListenerWithConfig(t, thisNet, serverAddr, messages, "theserver", serverQuicConfig)
 
 	clientTlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
@@ -273,34 +363,58 @@ func TestTooManyStreams(t *testing.T) {
 		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.1:32345"), thisNet),
 		clientTlsConfig, nil)
 
-	ctx, cancelF := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancelF := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelF()
 
 	conns := make([]net.Conn, 0)
 	connsM := sync.Mutex{}
 	wgClients := sync.WaitGroup{}
+	sessions := make(map[quic.Session]struct{})
 	runClient := func(id int) {
 		wgClients.Add(1)
 		go func() {
 			defer wgClients.Done()
 			conn, err := dialer.Dial(ctx, serverAddr)
 			require.NoError(t, err)
-			_, err = io.WriteString(conn, "message from client")
-			require.NoError(t, err)
+			n, err := io.WriteString(conn, "message from client")
+			require.NoError(t, err, "failed for: %s", id)
+			require.Greater(t, n, 0, "failed for: %s", id)
+
+			require.IsType(t, streamAsConn{}, conn)
+			c := conn.(streamAsConn)
 
 			connsM.Lock()
-			defer connsM.Unlock()
+			sessions[c.session] = struct{}{}
 			conns = append(conns, conn)
+			connsM.Unlock()
 			// do not close the stream
 		}()
 	}
+
 	N := 5000 // 5000 simultaneous streams to the same destination
 	for i := 0; i < N; i++ {
 		runClient(i)
 	}
+	// read the N messages
+	for i := 0; i < N; i++ {
+		<-messages
+	}
 	require.NoError(t, waitWithContext(ctx, &wgClients))
 	require.Len(t, dialer.sessions, 1)
 	require.Len(t, conns, N)
+	// check that we have used more than one session, but only one is active
+	require.Len(t, dialer.sessions, 1) // active
+	require.Len(t, sessions, N/maxIncomingStreams)
+
+	// check that all connections are still working
+	for i := 0; i < N; i++ {
+		_, err := io.WriteString(conns[i], "hello")
+		require.NoError(t, err)
+	}
+	for i := 0; i < N; i++ {
+		<-messages
+	}
+
 	// close all connections
 	for i, c := range conns {
 		err := c.Close()
@@ -309,7 +423,91 @@ func TestTooManyStreams(t *testing.T) {
 }
 
 func TestCloseSession(t *testing.T) {
+	const maxIncomingStreams = 10
+	thisNet := newMockNetwork(t)
+	serverAddr := mockScionAddressWithPath(t, "1-ff00:0:110", "127.0.0.212:30001",
+		"1-ff00:0:111", 41, 1, "1-ff00:0:110")
+	messages := make(chan string)
+	serverQuicConfig := &quic.Config{
+		KeepAlive:          true,
+		MaxIncomingStreams: maxIncomingStreams,
+	}
+	go runListenerWithConfig(t, thisNet, serverAddr, messages, "theserver", serverQuicConfig)
 
+	clientTlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"coliquictest"},
+	}
+	dialer := NewPersistentQUIC(
+		newConnMock(t, mockScionAddress(t, "1-ff00:0:111", "127.0.0.122:32345"), thisNet),
+		clientTlsConfig, nil)
+
+	ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelF()
+
+	mu := sync.Mutex{}
+	conns := make([]net.Conn, 0)
+	sessions := make(map[quic.Session]struct{})
+	wgClients := sync.WaitGroup{}
+	runClient := func(id int) {
+		wgClients.Add(1)
+		go func() {
+			defer wgClients.Done()
+			conn, err := dialer.Dial(ctx, serverAddr)
+			require.NoError(t, err)
+			n, err := io.WriteString(conn, "message from client")
+			require.NoError(t, err, "failed for: %s", id)
+			require.Greater(t, n, 0, "failed for: %s", id)
+
+			require.IsType(t, streamAsConn{}, conn)
+			c := conn.(streamAsConn)
+
+			mu.Lock()
+			sessions[c.session] = struct{}{}
+			conns = append(conns, conn)
+			mu.Unlock()
+			// do not close the stream
+		}()
+	}
+
+	N := 50 // 5000 simultaneous streams to the same destination
+	for i := 0; i < N; i++ {
+		runClient(i)
+	}
+	wgClients.Wait()
+
+	type contexter interface {
+		Context() context.Context
+	}
+	// all sessions are still open
+	for s := range sessions {
+		require.NoError(t, s.Context().Err())
+	}
+	// all connections are still open
+	for _, c := range conns {
+		cc, ok := c.(contexter)
+		require.True(t, ok)
+		require.NoError(t, cc.Context().Err())
+	}
+	// closing sessions and streams now
+	err := dialer.Close()
+	require.NoError(t, err)
+	// all sessions should be closed
+	for s := range sessions {
+		require.Error(t, s.Context().Err())
+		// if we try to open a stream we receive an error
+		_, err := s.OpenStream()
+		require.Error(t, err)
+	}
+	// all connections should be closed
+	for _, c := range conns {
+		cc, ok := c.(contexter)
+		require.True(t, ok)
+		require.Error(t, cc.Context().Err()) // it is closed
+		// if we try to write we get an error
+		_, err := c.Write([]byte("1"))
+		require.Error(t, err)
+	}
 }
 
 func waitWithContext(ctx context.Context, wg *sync.WaitGroup) error {
@@ -320,31 +518,56 @@ func waitWithContext(ctx context.Context, wg *sync.WaitGroup) error {
 	}()
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("context deadline exceeded, server not done")
+		return fmt.Errorf("context deadline exceeded, wait group not finished")
 	case <-done:
 	}
 	return nil
 }
 
-func runListener(t *testing.T, theNet *mockNetwork, serverAddr net.Addr,
+func runListenerDefaultConfig(t *testing.T, theNet *mockNetwork, serverAddr net.Addr,
 	messages chan string, serverId string) {
+
+	defaultQuicConfig := &quic.Config{
+		KeepAlive: true,
+	}
+	runListenerWithConfig(t, theNet, serverAddr, messages, serverId, defaultQuicConfig)
+}
+
+// runListenerWithConfig continuously accepts connections and spawns a new routine
+// to read from each new connection. It will close the connection once it reads EOF.
+// Each message read is copied to the string channel.
+func runListenerWithConfig(t *testing.T, theNet *mockNetwork, serverAddr net.Addr,
+	messages chan string, serverId string, config *quic.Config) {
 
 	serverTlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{*createTestCertificate(t)},
 		NextProtos:   []string{"coliquictest"},
 	}
-	serverQuicConfig := &quic.Config{KeepAlive: true}
+
 	listener := NewListener(newConnMock(t, serverAddr, theNet),
-		serverTlsConfig, serverQuicConfig)
+		serverTlsConfig, config)
 	for {
 		conn, err := listener.Accept()
 		require.NoError(t, err, "failed for: %s", serverId)
-		buff, err := io.ReadAll(conn)
-		require.NoError(t, err, "failed for: %s", serverId)
-		msg := string(buff)
-		messages <- msg
-		err = conn.Close()
-		require.NoError(t, err)
-	}
 
+		go func() {
+			var buff [16384]byte
+			for {
+				n, err := conn.Read(buff[:])
+				msg := string(buff[:n])
+				if err == io.EOF {
+					// close stream
+					err = conn.Close()
+					require.NoError(t, err)
+					messages <- msg
+					break
+				}
+				// TODO(juagargi) this is flaky: sometimes it will receive an application error
+				// because the other end has closed the stream/session
+				require.NoError(t, err, "failed for: %s", serverId)
+				require.Greater(t, n, 0, "failed for: %s", serverId)
+				messages <- msg
+			}
+		}()
+	}
 }

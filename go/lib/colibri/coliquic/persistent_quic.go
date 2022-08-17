@@ -45,18 +45,17 @@ import (
 //
 // gRPC doesn't have support for QUIC yet, and uses HTTP/2 as transport.
 // Creating a new grpc.ClientConn doesn't require a new QUIC session, but currently our
-// squic.ConnDialer always creates one. This can exhaust the available ports at transit
-// ASes that rely requests to the next AS and wait for their answer before returning and
-// closing the QUIC session.
-// With this construction, a new session is created if the object doesn't have one for the
+// squic.ConnDialer always creates one, which is expensive.
+// With PersistQUIC, a new session is created if the object doesn't have one for the
 // requested path.
 // If it has one, a new stream is created instead.
 type PersistentQUIC struct {
 	pconn      net.PacketConn
 	tlsConfig  *tls.Config
 	quicConfig *quic.Config
-	sessions   map[string]quic.Session
-	sessionsM  sync.Mutex
+	sessionsMu sync.Mutex
+	sessions   map[string]quic.Session // active session per dst address
+	opened     []quic.Session          // all sessions ever opened
 }
 
 func NewPersistentQUIC(pconn net.PacketConn, tlsConfig *tls.Config,
@@ -66,8 +65,9 @@ func NewPersistentQUIC(pconn net.PacketConn, tlsConfig *tls.Config,
 		pconn:      pconn,
 		tlsConfig:  tlsConfig,
 		quicConfig: quicConfig,
+		sessionsMu: sync.Mutex{},
 		sessions:   make(map[string]quic.Session),
-		sessionsM:  sync.Mutex{},
+		opened:     make([]quic.Session, 0),
 	}
 }
 
@@ -79,51 +79,75 @@ func (pq *PersistentQUIC) Dial(ctx context.Context, dst net.Addr) (net.Conn, err
 		return nil, err
 	}
 	var sessionError error
-	pq.sessionsM.Lock()
-	defer pq.sessionsM.Unlock()
+	pq.sessionsMu.Lock()
+	defer pq.sessionsMu.Unlock()
 	for attempts := 0; attempts < 2; attempts++ {
-		sess, ok := pq.sessions[repr]
-		if !ok {
-			var err error
-			sess, err = quic.DialContext(ctx, pq.pconn, dst, addrToSNI(dst),
-				pq.tlsConfig, pq.quicConfig)
-			if err != nil {
-				return nil, err
-			}
-			pq.sessions[repr] = sess
-		}
-		stream, err := sess.OpenStream()
+		sess, err := pq.obtainSession(ctx, dst, repr)
 		if err != nil {
 			sessionError = err
-			var appErr *quic.ApplicationError
-			if errors.As(err, &appErr) && appErr.Remote {
-				// session closed on remote side: try to create a new session and repeat once more
-				log.Info("persistent quic, session closed at other end?", "err", err)
-				delete(pq.sessions, repr)
-				continue
+			break
+		}
+		stream, err := sess.OpenStream()
+		if err == nil {
+			return streamAsConn{
+				stream:  stream,
+				session: sess,
+			}, nil
+		}
+		sessionError = err
+		var appErr *quic.ApplicationError
+		var netErr net.Error
+		switch {
+		case errors.As(err, &appErr) && appErr.Remote:
+			log.Debug("persistent quic client, session closed at other end", "err", err)
+		case errors.As(err, &netErr):
+			switch {
+			case netErr.Temporary():
+				log.Debug("persistent quic, too many streams", "err", err)
+			case netErr.Timeout():
+				log.Debug("persistent quic, idle time", "err", err)
 			}
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Temporary() {
-				log.Info("persistent quic, too many streams?", "err", err)
-				delete(pq.sessions, repr)
-				continue
-			}
-			log.Info("persistent quic, unhandled error", "err", err)
+		default:
 			return nil, err
 		}
-
-		return streamAsConn{
-			stream:  stream,
-			session: sess,
-		}, nil
+		delete(pq.sessions, repr)
 	}
 	return nil, serrors.New("could not reuse or create a session", "err", sessionError)
+}
+
+func (q *PersistentQUIC) Close() error {
+	q.sessionsMu.Lock()
+	defer q.sessionsMu.Unlock()
+	errs := serrors.List{}
+	for _, s := range q.opened {
+		if err := s.CloseWithError(0, ""); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs.ToError()
+}
+
+func (pq *PersistentQUIC) obtainSession(ctx context.Context, addr net.Addr, repr string) (
+	quic.Session, error) {
+
+	sess, ok := pq.sessions[repr]
+	if !ok {
+		var err error
+		sess, err = quic.DialContext(ctx, pq.pconn, addr, addrToSNI(addr),
+			pq.tlsConfig, pq.quicConfig)
+		if err != nil {
+			return nil, err
+		}
+		pq.sessions[repr] = sess
+		pq.opened = append(pq.opened, sess)
+	}
+	return sess, nil
 }
 
 // streamAsConn is a net.Conn backed by a quic stream.
 type streamAsConn struct {
 	stream  quic.Stream
-	session quic.Session
+	session quic.Session // only used for the local and remote addresses.
 }
 
 func (c streamAsConn) Read(b []byte) (int, error) {
@@ -154,11 +178,15 @@ func (c streamAsConn) RemoteAddr() net.Addr {
 	return c.session.RemoteAddr()
 }
 
+func (c streamAsConn) Context() context.Context {
+	return c.stream.Context()
+}
+
 func (c streamAsConn) Close() error {
 	return c.stream.Close()
 }
 
-// addrToString returns a string represenation of the address.
+// addrToString returns a string representation of the address.
 func addrToString(addr net.Addr) (string, error) {
 	switch addr := addr.(type) {
 	case *snet.UDPAddr:
@@ -169,7 +197,7 @@ func addrToString(addr net.Addr) (string, error) {
 }
 
 // snetAddrToString returns a string representation of the address/path tuple passed as argument.
-// The representation is invatiant to e.g. packet size and precision timestamps.
+// The representation is invariant to e.g. packet size and precision timestamps.
 func snetAddrToString(addr *snet.UDPAddr) (string, error) {
 	switch p := addr.Path.(type) {
 	case path.Empty:
@@ -210,16 +238,16 @@ func addrPathToString(addr *snet.UDPAddr, pt slayerspath.Type, raw []byte) strin
 	var suffix string
 	switch pt {
 	case empty.PathType:
-		suffix = addr.String()
 	case colibri.PathType:
 		suffix = hex.EncodeToString(invariantColibri(raw))
-
 	default:
 		suffix = hex.EncodeToString(raw)
 	}
+	suffix += addr.String()
 	return pt.String() + suffix
 }
 
+// addrToSNI returns the server name indication for an address.
 func addrToSNI(addr net.Addr) string {
 	switch addr := addr.(type) {
 	case *snet.UDPAddr:

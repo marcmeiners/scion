@@ -17,6 +17,7 @@ package coliquic
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"sync"
 
@@ -53,25 +54,26 @@ func NewListener(pconn net.PacketConn, tlsConfig *tls.Config, quicConfig *quic.C
 // out of it.
 // Accept is typically called in a Loop.
 func (l *Listener) Accept() (net.Conn, error) {
-	var err error
 	// create a listener only once. Cannot use sync.Once as we want to return immediately if
 	// quic.Listen returned an error, and at the same time in this case, would want
 	// to cancel the sync.Once.
 	l.listenerMux.Lock()
 	if l.listener == nil {
+		var err error
 		l.listener, err = quic.Listen(l.pconn, l.tlsConfig, l.quicConfig)
+		if err != nil {
+			return nil, err
+		}
 		go func() {
 			defer log.HandlePanic()
 			l.acceptNewSessions()
 		}()
 	}
 	l.listenerMux.Unlock()
-	if err != nil {
-		return nil, err
-	}
 	// we have a listener. The listener is always listening for new sessions,
 	// and when a new session is established, it will wait for new streams
 	var conn net.Conn
+	var err error
 	select {
 	case conn = <-l.newConns:
 	case err = <-l.acceptErrs:
@@ -98,10 +100,11 @@ func (l *Listener) Addr() net.Addr {
 }
 
 func (l *Listener) acceptNewSessions() {
+	// TODO(juagargi) test listener with many streams
 	for {
 		sess, err := l.listener.Accept(context.Background())
 		if err != nil {
-			log.Info("error listening for new session", "err", err)
+			log.Debug("error listening for new session", "err", err)
 			if netErr, ok := err.(net.Error); ok {
 				if netErr.Temporary() || netErr.Timeout() {
 					continue // don't give up
@@ -109,12 +112,12 @@ func (l *Listener) acceptNewSessions() {
 			}
 			l.acceptErrs <- err
 			return // the error is not recoverable
-		} else {
-			go func() {
-				defer log.HandlePanic()
-				l.acceptNewStreams(sess)
-			}()
 		}
+		go func() {
+			defer log.HandlePanic()
+			l.acceptNewStreams(sess)
+			sess.CloseWithError(0, "")
+		}()
 	}
 }
 
@@ -122,14 +125,16 @@ func (l *Listener) acceptNewStreams(sess quic.Session) {
 	for {
 		stream, err := sess.AcceptStream(context.Background())
 		if err != nil {
-			log.Info("error listening for new streams, session closed?", "err", err)
-			return // exit the function, regardless of the error
-		} else {
-			conn := &streamAsConn{
-				stream:  stream,
-				session: sess,
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				log.Debug("error listening for new streams, session closed?", "err", err)
 			}
-			l.newConns <- conn
+			return // exit the function, regardless of the error
 		}
+		conn := &streamAsConn{
+			stream:  stream,
+			session: sess,
+		}
+		l.newConns <- conn
 	}
 }
