@@ -54,6 +54,7 @@ func NewListener(pconn net.PacketConn, tlsConfig *tls.Config, quicConfig *quic.C
 // out of it.
 // Accept is typically called in a Loop.
 func (l *Listener) Accept() (net.Conn, error) {
+	// TODO(juagargi) Accept should receive a ctx.
 	// create a listener only once. Cannot use sync.Once as we want to return immediately if
 	// quic.Listen returned an error, and at the same time in this case, would want
 	// to cancel the sync.Once.
@@ -100,7 +101,6 @@ func (l *Listener) Addr() net.Addr {
 }
 
 func (l *Listener) acceptNewSessions() {
-	// TODO(juagargi) test listener with many streams
 	for {
 		sess, err := l.listener.Accept(context.Background())
 		if err != nil {
@@ -116,7 +116,10 @@ func (l *Listener) acceptNewSessions() {
 		go func() {
 			defer log.HandlePanic()
 			l.acceptNewStreams(sess)
-			sess.CloseWithError(0, "")
+			err = sess.CloseWithError(0, "")
+			if err != nil {
+				log.Info("session was closed with an error", "err", err)
+			}
 		}()
 	}
 }
@@ -127,6 +130,7 @@ func (l *Listener) acceptNewStreams(sess quic.Session) {
 		if err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
+				// TODO(juagargi) too many messages like "timeout: no recent network activity""
 				log.Debug("error listening for new streams, session closed?", "err", err)
 			}
 			return // exit the function, regardless of the error

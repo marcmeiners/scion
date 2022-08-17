@@ -416,12 +416,15 @@ func TestTooManyStreams(t *testing.T) {
 
 	// check that all connections are still working
 	for i := 0; i < N; i++ {
-		_, err := io.WriteString(conns[i], "hello")
+		_, err := io.WriteString(conns[i], fmt.Sprintf("hello %d", i))
 		require.NoError(t, err)
 	}
+	uniqueMsgs := make(map[string]struct{})
 	for i := 0; i < N; i++ {
-		<-messages
+		msg := <-messages
+		uniqueMsgs[msg] = struct{}{}
 	}
+	require.Len(t, uniqueMsgs, N)
 
 	// close all connections
 	for i, c := range conns {
