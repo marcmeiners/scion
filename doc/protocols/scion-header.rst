@@ -787,19 +787,33 @@ Colibri Packet Timestamp
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                             TsRel                             |
+    |                        Expiration Tick                        |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                             PckId                             |
+    |                TsRel / Original Payload Length                |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                         PckId / NOOP                          |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-Both fields ``TsRel`` and ``PckId`` contain arbitrary data when ``C=1``
+The field ``TsRel`` contains the ``Original Payload Length`` when ``R=1``.
+Done this way to keep the computed MACs valid in case of a response,
+where the packet will have a different payload (and thus different size).
+
+The field ``PckId`` contains arbitrary data when ``C=1``
 (defined in the InfoField).
-This is so because these fields are only used for E2E data plane traffic,
+This is so because this field is only used for E2E data plane traffic,
 which means ``C=0``; thus they only need to be set for ``C=0``.
 
-TsRel
-  A 4-byte timestamp relative to the Expiration Tick in the InfoField minus 16
-  seconds.
+Expiration Tick
+    The value represents the "tick" where this packet is no longer valid.
+    A tick is four seconds, so :math:`\text{Expiration Time} = 4 \times
+    \text{Expiration Tick}` seconds after Unix epoch.
+
+Original Payload Length (if ``R=1``)
+    If R = 1 (the packet is a response),
+    then the field contains the original payload length, i.e., the
+    payload lenght of the preceding COLIBRI packet with ``R=0``.
+TsRel (if ``R=0``)
+  A 4-byte timestamp relative to the Expiration Tick minus 16 seconds.
   TsRel is calculated by the source host as follows:
 
 .. math::
@@ -861,11 +875,8 @@ The only info field has the following format::
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                                                               |
     |                     Reservation ID Suffix                     |
-    |                                                               |
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                        Expiration Tick                        |
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |      BWCls    |      RLC      |    Original Payload Length    |
+    |                               +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                               |      BWCls    |      RLC      |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 r
@@ -887,25 +898,15 @@ CurrHF
 HFCount
     The number of total HopFields.
 Reservation ID Suffix
-    Uses 12 bytes. Either an E2E Reservation ID suffix or a
+    Uses 10 bytes. Either an E2E Reservation ID suffix or a
     Segment Reservation ID suffix,
     depending on `S`. If :math:`S=1`, the Segment Reservation ID suffix
-    is padded with zeroes until using all 12 bytes. If :math:`S=0`
-    the 12 bytes from the E2E Reservation ID suffix are included.
-Expiration Tick
-    The value represents the "tick" where this packet is no longer valid.
-    A tick is four seconds, so :math:`\text{Expiration Time} = 4 \times
-    \text{Expiration Tick}` seconds after Unix epoch.
+    is padded with zeroes until using all 10 bytes. If :math:`S=0`
+    the 10 bytes from the E2E Reservation ID suffix are included.
 BWCls
     The bandwidth class this reservation has.
 RLC
     The Request Latency Class this reservation has.
-Original Payload Length
-    The field only has a meaning if S = 0.
-    If R = 0, then this field is the same as the PayloadLen field in
-    the SCION common header. If R = 1 (the packet is a response),
-    then the field contains the original payload length, i.e., the
-    payload lenght of the preceding COLIBRI packet with R = 0.
 
 Reservation ID Reconstruction
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -961,6 +962,8 @@ There is an explanation about the rationale of the MAC computation on
 Here we only detail how to perform the two different MAC computations.
 The two different MAC flavors are the *static MAC* and the *per-packet MAC*
 (also known as *HVF*).
+
+TODO(juagargi) in `InputData` modify ID Suffix to 10 bytes and rearrange lines to minimize mem moves:
 
 The `InputData` is common for both types::
 
@@ -1027,8 +1030,8 @@ PacketTimestamp
     The Timestamp described on `Colibri Packet Timestamp`_.
 Original Packet Size
     The total size of the packet. It is the sum of the common header, the address header, the
-    Colibri header, and the original payload size as indicated in the Info Field (Original
-    Payload Length).
+    Colibri header, and the original payload size if ``R=0``, or as indicated in the
+    Timestamp field (Original Payload Length in ``TsRel`` when ``R=1``).
 
 The per packet MACs (or *HVFs*) are used only when ``C=0``, which implies
 that the S flag is also not set (``S=0``). The computation of
