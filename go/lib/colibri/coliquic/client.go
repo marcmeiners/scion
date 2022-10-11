@@ -167,7 +167,7 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 	}
 	rAddr = rAddr.Copy() // preserve the original data
 
-	// deleteme try to send using directly transportPath
+	// deleteme try to send using directly the transport IA and Host fields
 	// if transport is nil, just use a path obtained here (above thru neighborAddr)
 	switch {
 	case transportPath == nil:

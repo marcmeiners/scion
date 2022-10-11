@@ -36,7 +36,6 @@ type Store interface {
 	AdmitSegmentReservation(
 		ctx context.Context,
 		req *sgt.SetupReq,
-		transportPath *colpath.ColibriPathMinimal,
 	) (sgt.SegmentSetupResponse, error)
 	ConfirmSegmentReservation(
 		ctx context.Context,

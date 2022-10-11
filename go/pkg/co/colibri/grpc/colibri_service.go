@@ -61,7 +61,7 @@ func (s *ColibriService) SegmentSetup(ctx context.Context, msg *colpb.SegmentSet
 		return nil, err
 	}
 	req.TakeStep() // a new hop has been traversed, take one more step (modify CurrentStep)
-	res, err := s.Store.AdmitSegmentReservation(ctx, req, transportPath)
+	res, err := s.Store.AdmitSegmentReservation(ctx, req)
 	if err != nil {
 		log.Info("error colibri store returned an error", "err", err)
 		// should send a message?
