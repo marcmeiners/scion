@@ -387,7 +387,13 @@ func (c client) createRsv(ctx context.Context, fullTrip *libcol.FullTrip,
 	if err != nil {
 		return reservation.ID{}, nil, err
 	}
-	err = res.ValidateAuthenticators(ctx, c.DRKeyFetcher, fullTrip.PathSteps(), c.Local.Host.IP, now)
+	err = res.ValidateAuthenticators(
+		ctx,
+		c.DRKeyFetcher,
+		fullTrip.PathSteps(),
+		c.Local.Host.IP,
+		now,
+	)
 	if err != nil {
 		return reservation.ID{}, nil, err
 	}

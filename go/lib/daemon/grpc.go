@@ -242,7 +242,11 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 	}, nil
 }
 
-func (c grpcConn) ColibriCleanupRsv(ctx context.Context, req *colibri.BaseRequest, steps base.PathSteps) error {
+func (c grpcConn) ColibriCleanupRsv(
+	ctx context.Context,
+	req *colibri.BaseRequest,
+	steps base.PathSteps,
+) error {
 
 	if req == nil {
 		return serrors.New("invalid nil request")

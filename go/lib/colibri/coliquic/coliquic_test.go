@@ -144,7 +144,14 @@ func TestQUICMultipleConnections(t *testing.T) {
 			ctx, cancelF := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancelF()
 			for i, dstAddr := range tc.messagesTo {
-				session, err := quic.DialContext(ctx, conn, dstAddr, "serverName", clientTlsConfig, clientQuicConfig)
+				session, err := quic.DialContext(
+					ctx,
+					conn,
+					dstAddr,
+					"serverName",
+					clientTlsConfig,
+					clientQuicConfig,
+				)
 				require.NoError(t, err)
 				stream, err := session.OpenStream()
 				require.NoError(t, err)
@@ -318,7 +325,8 @@ func (n *mockNetwork) ReadFrom(receiver net.Addr) ([]byte, net.Addr) {
 	n.ensureChannel(key)
 	pac := <-n.channels[key]
 	if n.debugMessagesEnabled {
-		fmt.Printf("[mocknet] ReadFrom (%s -> %s) = %d bytes\n", pac.sender, receiver, len(pac.data))
+		fmt.Printf("[mocknet] ReadFrom (%s -> %s) = %d bytes\n",
+			pac.sender, receiver, len(pac.data))
 	}
 	return pac.data, pac.sender
 }

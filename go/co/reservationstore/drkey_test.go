@@ -689,7 +689,11 @@ func (f fakeFastKeyer) Lvl1Key(_ context.Context, meta drkey.Lvl1Meta) (drkey.Lv
 	return fakedrkey.Lvl1Key(meta), nil
 }
 
-func (f fakeFastKeyer) ASHostKey(_ context.Context, meta drkey.ASHostMeta) (drkey.ASHostKey, error) {
+func (f fakeFastKeyer) ASHostKey(
+	_ context.Context,
+	meta drkey.ASHostMeta,
+) (drkey.ASHostKey, error) {
+
 	if meta.SrcIA != f.localIA {
 		require.FailNow(f.t, fmt.Sprintf("cannot derive, SrcIA != localIA, SrcIA=%s, localIA=%s",
 			meta.SrcIA, f.localIA))

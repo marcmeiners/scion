@@ -253,8 +253,11 @@ func TestDeriveColibriPathAtSource(t *testing.T) {
 		"reverse": {
 			ReverseDirection: true,
 			SegR: &segment.Reservation{
-				PathType:    reservation.DownPath,
-				Steps:       test.NewSteps("1-ff00:0:1", 1, 2, "1-ff00:0:2", 3, 4, "1-ff00:0:3").Reverse(),
+				PathType: reservation.DownPath,
+				Steps: test.NewSteps("1-ff00:0:1", 1,
+					2, "1-ff00:0:2", 3,
+					4, "1-ff00:0:3",
+				).Reverse(),
 				CurrentStep: 1,
 				ID:          *test.MustParseID("ff00:0:1", "01234567"),
 				Indices: segment.Indices{segment.Index{

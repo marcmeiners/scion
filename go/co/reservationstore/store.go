@@ -440,8 +440,6 @@ func (s *Store) DeleteExpiredAdmissionEntries(ctx context.Context, now time.Time
 	return n, now.Add(MaxAdmissionEntryValidity), nil
 }
 
-// deleteme AdmitSegmentReservation accepts a SetupReq that includes the transport path already, change signature
-
 // AdmitSegmentReservation receives a setup/renewal request to admit a segment reservation.
 // It is expected that this AS is not the reservation initiator.
 func (s *Store) AdmitSegmentReservation(
@@ -1255,7 +1253,8 @@ func (s *Store) AdmitE2EReservation(
 	}
 	// here the request was admitted and returning back from the down stream admission
 
-	err = s.addHopFieldToColibriPath(rsv.ID.Suffix, token, req.ID.ASID, req.ID.ASID, ingress, egress)
+	err = s.addHopFieldToColibriPath(rsv.ID.Suffix, token, req.ID.ASID,
+		req.ID.ASID, ingress, egress)
 	if err != nil {
 		failedResponse.Message = s.errWrapStr("cannot compute MAC", err).Error()
 		return failedResponse, err
@@ -1402,7 +1401,8 @@ func (s *Store) CleanupE2EReservation(
 	}
 	// forward to next colibri service
 	// deleteme BUG using transportPath when this is a stitching point. Also present in E2ESetup
-	// client, err := s.operator.ColibriClient(ctx, rsv.Steps[rsv.CurrentStep].Egress, transportPath)
+	// client, err := s.operator.ColibriClient(ctx,
+	// 					rsv.Steps[rsv.CurrentStep].Egress, transportPath)
 	client, err := s.operator.ColibriClient(ctx, rsv.Steps[rsv.CurrentStep].Egress, nil)
 	if err != nil {
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
@@ -1802,8 +1802,12 @@ func (s *Store) sendUpstreamForAdmission(
 	return res, nil
 }
 
-func (s *Store) addHopFieldToColibriPath(suffix []byte, tok *reservation.Token, srcAS, dstAS addr.AS,
-	ingress, egress uint16) error {
+func (s *Store) addHopFieldToColibriPath(
+	suffix []byte,
+	tok *reservation.Token,
+	srcAS, dstAS addr.AS,
+	ingress, egress uint16,
+) error {
 
 	hf := tok.AddNewHopField(&reservation.HopField{
 		Ingress: ingress,
@@ -1813,7 +1817,8 @@ func (s *Store) addHopFieldToColibriPath(suffix []byte, tok *reservation.Token, 
 	return computeMAC(hf.Mac[:], s.colibriKey, suffix, tok, hf, srcAS, dstAS, isE2E)
 }
 
-// computeMAC returns the MAC into buff, which has to be at least 4 bytes long (or runtime panic).
+// computeMAC returns the MAC into buff, which has to be
+// at least 4 bytes long (or runtime panic).
 func computeMAC(buff []byte, key cipher.Block, suffix []byte, tok *reservation.Token,
 	hf *reservation.HopField, srcAS, dstAS addr.AS, isE2E bool) error {
 

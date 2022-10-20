@@ -487,7 +487,11 @@ func testNewRsv(t *testing.T, srcAS string, suffix string, ingress, egress uint1
 		xtest.MustParseHexString(suffix))
 	require.NoError(t, err)
 
-	steps := test.NewSteps("1-ff00:0:1", 1, int(ingress), "1-ff00:0:2", int(egress), 1, "1-ff00:0:3")
+	steps := test.NewSteps(
+		"1-ff00:0:1", 1,
+		int(ingress), "1-ff00:0:2", int(egress),
+		1, "1-ff00:0:3",
+	)
 
 	rsv := &segment.Reservation{
 		ID: *ID,
@@ -516,7 +520,12 @@ func testNewRsv(t *testing.T, srcAS string, suffix string, ingress, egress uint1
 
 // testAddAllocTrail adds an allocation trail to a reservation. The beads parameter represents
 // the trail like: alloc0,max0,alloc1,max1,...
-func testAddAllocTrail(t *testing.T, req *segment.SetupReq, beads ...reservation.BWCls) *segment.SetupReq {
+func testAddAllocTrail(
+	t *testing.T,
+	req *segment.SetupReq,
+	beads ...reservation.BWCls,
+) *segment.SetupReq {
+
 	if len(beads)%2 != 0 {
 		require.FailNow(t, "the beads must be even")
 	}

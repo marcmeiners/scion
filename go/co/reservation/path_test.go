@@ -317,10 +317,10 @@ func TestColPathToRaw(t *testing.T) {
 					HFCount:     2,
 				},
 				HopFields: []*colpath.HopField{
-					&colpath.HopField{
+					{
 						Mac: make([]byte, 4),
 					},
-					&colpath.HopField{
+					{
 						Mac: make([]byte, 4),
 					},
 				},
@@ -338,10 +338,10 @@ func TestColPathToRaw(t *testing.T) {
 					ExpTick:     0xff00ff00,
 				},
 				HopFields: []*colpath.HopField{
-					&colpath.HopField{
+					{
 						Mac: make([]byte, 4),
 					},
-					&colpath.HopField{
+					{
 						Mac: make([]byte, 4),
 					},
 				},

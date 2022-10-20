@@ -207,8 +207,13 @@ func setupColibri(ctx context.Context, g *errgroup.Group, cleanup *app.Cleanup, 
 	return nil
 }
 
-func colibriManager(ctx context.Context, topo *topology.Loader, router snet.Router, store reservationstorage.Store,
-	initialRsvs *coli_conf.Reservations) (*periodic.Runner, error) {
+func colibriManager(
+	ctx context.Context,
+	topo *topology.Loader,
+	router snet.Router,
+	store reservationstorage.Store,
+	initialRsvs *coli_conf.Reservations,
+) (*periodic.Runner, error) {
 
 	if store == nil {
 		return nil, nil

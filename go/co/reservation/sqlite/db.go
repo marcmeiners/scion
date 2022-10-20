@@ -674,10 +674,12 @@ func upsertNewSegReservation(ctx context.Context, x db.Sqler, rsv *segment.Reser
 		SET ingress = ?, egress = ?, path_type = ?, steps = ?, current_step = ?, transportPath = ?,
 		end_props = ?, traffic_split = ?, src_ia = ?, dst_ia = ?, active_index = ?`
 	_, err = x.ExecContext(
-		ctx, query, rsv.ID.ASID, binary.BigEndian.Uint32(rsv.ID.Suffix), rsv.Ingress(), rsv.Egress(),
-		rsv.PathType, rawSteps, rsv.CurrentStep, transportPath, rsv.PathEndProps, rsv.TrafficSplit, rsv.Steps.SrcIA(),
-		rsv.Steps.DstIA(), activeIndex, rsv.Ingress(), rsv.Egress(), rsv.PathType, rawSteps, rsv.CurrentStep, transportPath,
-		rsv.PathEndProps, rsv.TrafficSplit, rsv.Steps.SrcIA(), rsv.Steps.DstIA(), activeIndex)
+		ctx, query, rsv.ID.ASID, binary.BigEndian.Uint32(rsv.ID.Suffix), rsv.Ingress(),
+		rsv.Egress(), rsv.PathType, rawSteps, rsv.CurrentStep, transportPath,
+		rsv.PathEndProps, rsv.TrafficSplit, rsv.Steps.SrcIA(),
+		rsv.Steps.DstIA(), activeIndex, rsv.Ingress(), rsv.Egress(),
+		rsv.PathType, rawSteps, rsv.CurrentStep, transportPath, rsv.PathEndProps,
+		rsv.TrafficSplit, rsv.Steps.SrcIA(), rsv.Steps.DstIA(), activeIndex)
 	if err != nil {
 		return err
 	}
@@ -753,8 +755,11 @@ func getSegReservations(ctx context.Context, x db.Sqler, condition string, param
 	reservationFields := []*rsvFields{}
 	for rows.Next() {
 		var f rsvFields
-		err := rows.Scan(&f.RowID, &f.AsID, &f.Suffix, &f.Ingress, &f.Egress, &f.PathType, &f.Steps, &f.CurrentStep,
-			&f.TrasportPath, &f.EndProps, &f.TrafficSplit, &f.ActiveIndex)
+		err := rows.Scan(
+			&f.RowID, &f.AsID, &f.Suffix, &f.Ingress, &f.Egress,
+			&f.PathType, &f.Steps, &f.CurrentStep, &f.TrasportPath,
+			&f.EndProps, &f.TrafficSplit, &f.ActiveIndex,
+		)
 		if err != nil {
 			return nil, err
 		}
