@@ -124,7 +124,7 @@ func (pkt *Packet) Free() {
 }
 
 func (pkt *Packet) DecodeFromConn(conn conn.ExtendedPacketConn) error {
-	n, readExtra, err := conn.ReadFrom(pkt.buffer)
+	n, readExtra, dstIP, err := conn.ReadPacket(pkt.buffer)
 	if err != nil {
 		return err
 	}
@@ -132,6 +132,7 @@ func (pkt *Packet) DecodeFromConn(conn conn.ExtendedPacketConn) error {
 	metrics.M.NetReadBytes().Add(float64(n))
 
 	pkt.UnderlayRemote = readExtra.(*net.UDPAddr)
+	pkt.UnderlayLocal = dstIP
 	if err := pkt.decodeBuffer(); err != nil {
 		metrics.M.NetReadPkts(
 			metrics.IncomingPacket{

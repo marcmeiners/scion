@@ -70,6 +70,12 @@ func (dp *NetToRingDataplane) Run() error {
 			).Inc()
 			continue
 		}
+		// deleteme use the pkt.UnderlayLocal to redirect the packet to the appropriate service
+		// if colibri and C=1
+		log.Debug("                         deleteme local dispatcher",
+			"listening", dp.UnderlayConn.LocalAddr().String(),
+			"local", pkt.UnderlayLocal,
+			"remote", pkt.UnderlayRemote)
 		metrics.M.NetReadPkts(metrics.IncomingPacket{Result: metrics.PacketResultOk}).Inc()
 		dst.Send(dp, pkt)
 	}
