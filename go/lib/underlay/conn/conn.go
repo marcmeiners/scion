@@ -39,6 +39,7 @@ type Messages []ipv4.Message
 // Conn describes the API for an underlay socket
 type Conn interface {
 	ReadFrom([]byte) (int, *net.UDPAddr, error)
+	ReadPacket([]byte) (int, *net.UDPAddr, net.IP, error)
 	ReadBatch(Messages) (int, error)
 	Write([]byte) (int, error)
 	WriteTo([]byte, *net.UDPAddr) (int, error)
@@ -49,6 +50,17 @@ type Conn interface {
 	SetWriteDeadline(time.Time) error
 	SetDeadline(time.Time) error
 	Close() error
+}
+
+// ExtendedPacketConn extends the regular net.PacketConn with a method that allows the caller
+// to obtain the destination address of the packet.
+// This method is useful for e.g. the dispatcher who needs to know the destination of the
+// packets when it listens on e.g. 0.0.0.0, to redirect to the correct colibri service if C=1.
+type ExtendedPacketConn interface {
+	net.PacketConn
+	// ReadPacket behaves identically as net.PacketConn.ReadFrom but it additionally returns
+	// the destination address present in the IP packet.
+	ReadPacket(buff []byte) (n int, from net.Addr, to net.IP, err error)
 }
 
 // Config customizes the behavior of an underlay socket.
@@ -200,6 +212,12 @@ func (cc *connUDPBase) initConnUDP(network string, laddr, raddr *net.UDPAddr, cf
 	cc.Listen = laddr
 	cc.Remote = raddr
 	return nil
+}
+
+func (c *connUDPBase) ReadPacket(b []byte) (int, *net.UDPAddr, net.IP, error) {
+	// deleteme implement from the PoC
+	n, from, err := c.ReadFrom(b)
+	return n, from, net.ParseIP("0.0.0.0"), err
 }
 
 func (c *connUDPBase) ReadFrom(b []byte) (int, *net.UDPAddr, error) {
