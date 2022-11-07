@@ -33,6 +33,7 @@ import (
 
 func SetupReq(msg *colpb.SegmentSetupRequest, transportPath *colpath.ColibriPathMinimal,
 ) (*segment.SetupReq, error) {
+
 	if msg == nil || msg.Base == nil || msg.Params == nil {
 		return nil, serrors.New("incomplete message", "msg", msg)
 	}
