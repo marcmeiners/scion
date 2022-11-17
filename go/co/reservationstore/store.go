@@ -1028,8 +1028,7 @@ func (s *Store) AdmitE2EReservation(
 		}
 		// This is the only moment where we need to validate req.Steps against the segments.Steps.
 		// After this, we will store the rsv.Steps built from req.Steps and not touch them again
-		if err := validateE2ESteps(
-			s.localIA, rsv.SegmentReservations, req.Steps, req.CurrentStep); err != nil {
+		if err := validateE2ESteps(s.localIA, rsv, req.Steps, req.CurrentStep); err != nil {
 			failedResponse.Message = err.Error()
 			return failedResponse, err
 		}
@@ -1052,9 +1051,8 @@ func (s *Store) AdmitE2EReservation(
 		return failedResponse, err
 	}
 
-	isStitchPoint := false
-	if len(rsv.SegmentReservations) > 1 {
-		isStitchPoint = true
+	isStitchPoint := rsv.IsStitchPoint(s.localIA)
+	if isStitchPoint {
 		assert(len(rsv.SegmentReservations) == 2, "logic error: too many segments in AS: %v",
 			rsv.SegmentReservations)
 		assert(rsv.SegmentReservations[0].Steps.DstIA().Equal(s.localIA),
@@ -1481,38 +1479,47 @@ func (s *Store) authenticateSegSetupReq(ctx context.Context, req *segment.SetupR
 
 // validateE2ESteps checks that the current step obtained in the possible dual segment
 // corresponds to that of the current step from the request steps.
-func validateE2ESteps(localIA addr.IA, segments []*segment.Reservation,
-	steps base.PathSteps, currStep int) error {
+func validateE2ESteps(localIA addr.IA, rsv *e2e.Reservation, reqSteps base.PathSteps,
+	reqCurrStep int) error {
 
-	stitched := append(base.PathSteps{}, segments[0].Steps...)
-	for i := 1; i < len(segments); i++ {
-		s := segments[i].Steps
+	isStitchPoint := rsv.IsStitchPoint(localIA)
+	stitched := append(base.PathSteps{}, rsv.SegmentReservations[0].Steps...)
+	for i := 1; i < len(rsv.SegmentReservations); i++ {
+		s := rsv.SegmentReservations[i].Steps
 		// no need to check: by standard s[0].Ingress == stitched[last].Egress == 0
 		stitched[len(stitched)-1].Egress = s[0].Egress
 		stitched = append(stitched, s[1:]...)
 	}
-	prebuiltErr := serrors.New("steps validation error, request differs from segments",
-		"rsvs", stitched.String(), "req", steps.String(), "curr_step", currStep)
-	isStitchPoint := len(segments) > 1
+
 	var currInStitched int
-	for ; currInStitched < len(segments[0].Steps); currInStitched++ {
-		if segments[0].Steps[currInStitched].IA == localIA {
+	for ; currInStitched < len(rsv.SegmentReservations[0].Steps); currInStitched++ {
+		if stitched[currInStitched].IA == localIA &&
+			stitched[currInStitched].Ingress == reqSteps[reqCurrStep].Ingress &&
+			stitched[currInStitched].Egress == reqSteps[reqCurrStep].Egress {
 			break
 		}
 	}
-	if currInStitched >= len(segments[0].Steps) {
+
+	prebuiltErr := serrors.New("steps validation error, request differs from segments",
+		"local_ia", localIA,
+		"stitched", stitched.String(), "stitch_curr", currInStitched, "stitch_point", isStitchPoint,
+		"req_steps", reqSteps.String(), "req_curr_step", reqCurrStep)
+
+	if currInStitched >= len(stitched) {
 		return serrors.WrapStr("local AS not found", prebuiltErr)
 	}
+	if isStitchPoint && (currInStitched != reqCurrStep) {
+		return serrors.WrapStr("current step inconsistency", prebuiltErr)
+	}
 	if isStitchPoint &&
-		(currInStitched != len(segments[0].Steps)-1 || segments[1].Steps[0].IA != localIA) {
+		(currInStitched != len(rsv.SegmentReservations[0].Steps)-1 ||
+			rsv.SegmentReservations[1].Steps[0].IA != localIA) {
+
 		return serrors.WrapStr("local AS found in wrong position", prebuiltErr)
 	}
-	assert(stitched[currInStitched].IA == localIA, "bad local IA or curr step: %v", prebuiltErr)
-	if stitched[currInStitched].IA != steps[currStep].IA ||
-		addr.IA(stitched[currInStitched].Ingress) != addr.IA(steps[currStep].Ingress) ||
-		addr.IA(stitched[currInStitched].Egress) != addr.IA(steps[currStep].Egress) {
-		return serrors.WrapStr("bad curr index", prebuiltErr)
-	}
+
+	// assert(stitched[currInStitched].IA == localIA, "bad local IA or curr step: %v", prebuiltErr)
+
 	return nil
 }
 

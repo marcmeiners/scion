@@ -220,9 +220,13 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 		for i, b := range sdRes.Base.Failure.AllocTrail {
 			trail[i] = reservation.BWCls(b)
 		}
+		var macs [][]byte
+		if sdRes.Base.Authenticators != nil {
+			macs = sdRes.Base.Authenticators.Macs
+		}
 		return nil, &col.E2ESetupError{
 			E2EResponseError: col.E2EResponseError{
-				Authenticators: sdRes.Base.Authenticators.Macs,
+				Authenticators: macs,
 				Message:        sdRes.Base.Failure.ErrorMessage,
 				FailedAS:       int(sdRes.Base.Failure.FailedStep),
 			},

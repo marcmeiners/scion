@@ -30,8 +30,8 @@ import (
 // Reservation represents an E2E reservation.
 type Reservation struct {
 	ID                  reservation.ID
-	Steps               base.PathSteps
-	CurrentStep         int
+	Steps               base.PathSteps         // used to find the current AS
+	CurrentStep         int                    // a given AS appears only once inside Steps
 	SegmentReservations []*segment.Reservation // stitched segment reservations
 	Indices             Indices
 }
@@ -50,6 +50,14 @@ func (r *Reservation) IsFirstAS() bool {
 
 func (r *Reservation) IsLastAS() bool {
 	return r.CurrentStep == len(r.Steps)-1
+}
+
+func (r *Reservation) IsStitchPoint(ia addr.IA) bool {
+	if len(r.SegmentReservations) != 2 {
+		return false
+	}
+	return r.SegmentReservations[0].Steps.DstIA() == ia &&
+		r.SegmentReservations[1].Steps.SrcIA() == ia
 }
 
 func (r *Reservation) String() string {

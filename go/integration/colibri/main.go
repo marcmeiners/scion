@@ -301,7 +301,7 @@ func (c client) run() int {
 	if err != nil {
 		integration.LogFatal("listing reservations", "err", err)
 	}
-	log.Debug("listed reservations", "list", stitchable.String())
+	fmt.Printf("listed reservations:\n%s\n", stitchable.String())
 	trips := libcol.CombineAll(stitchable)
 	log.Info("computed full trips", "count", len(trips))
 	if len(trips) == 0 {
@@ -316,11 +316,14 @@ func (c client) run() int {
 	// use the reservation
 	c.Remote.Path = p.Dataplane()
 	c.Remote.NextHop = p.UnderlayNextHop()
+	log.Debug("sending message to server",
+		"steps", steps)
 	_, err = conn.WriteTo([]byte("colibri test colibri path"), c.Remote)
 	if err != nil {
 		integration.LogFatal("writing data with colibri", "err", err)
 	}
 	// read echo back again
+	log.Debug("reading message from server")
 	_, raddr, err := conn.ReadFrom(buff)
 	if err != nil {
 		integration.LogFatal("reading data", "err", err)
