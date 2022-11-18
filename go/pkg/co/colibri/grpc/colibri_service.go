@@ -280,10 +280,11 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 		},
 		RequestedBw: msg.RequestedBw,
 		Params: &colpb.E2ESetupRequest_PathParams{
-			Segments:       msg.Segments,
-			CurrentSegment: 0,
-			Steps:          msg.PathSteps,
-			CurrentStep:    0,
+			Segments:         msg.Segments,
+			CurrentSegment:   0,
+			Steps:            msg.Steps,
+			StepsNoShortcuts: msg.StepsNoShortcuts,
+			CurrentStep:      0,
 		},
 		Allocationtrail: nil,
 	}

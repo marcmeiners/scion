@@ -145,9 +145,9 @@ func (s *Store) ListStitchableSegments(ctx context.Context, dst addr.IA) (
 	response := &colibri.StitchableSegments{
 		SrcIA: s.localIA,
 		DstIA: dst,
-		Up:    make([]*colibri.ReservationLooks, 0),
-		Core:  make([]*colibri.ReservationLooks, 0),
-		Down:  make([]*colibri.ReservationLooks, 0),
+		Up:    make([]*colibri.SegRDetails, 0),
+		Core:  make([]*colibri.SegRDetails, 0),
+		Down:  make([]*colibri.SegRDetails, 0),
 	}
 	var err error
 
@@ -397,7 +397,7 @@ func (s *Store) InitTearDownSegmentReservation(ctx context.Context, req *base.Re
 }
 
 func (s *Store) ListReservations(ctx context.Context, dstIA addr.IA,
-	pathType reservation.PathType) ([]*colibri.ReservationLooks, error) {
+	pathType reservation.PathType) ([]*colibri.SegRDetails, error) {
 	rsvs, err := s.db.GetSegmentRsvsFromSrcDstIA(ctx, s.localIA, dstIA, pathType)
 	if err != nil {
 		log.Info("error listing reservations", "err", err)
@@ -1026,6 +1026,13 @@ func (s *Store) AdmitE2EReservation(
 				rsv.SegmentReservations = append(rsv.SegmentReservations, r)
 			}
 		}
+
+		// TODO(juagargi) do the shortcut checking here:
+		// When an endhost receives the list of segment details, it stitches the segment and then
+		// removes duplicated ASes in the path. Since the modified path is not part of the original
+		// segments that the ASes have published, the ASes have the opportunity to allow or deny
+		// the admission based on some criteria here.
+
 		// This is the only moment where we need to validate req.Steps against the segments.Steps.
 		// After this, we will store the rsv.Steps built from req.Steps and not touch them again
 		if err := validateE2ESteps(s.localIA, rsv, req.Steps, req.CurrentStep); err != nil {
@@ -1033,6 +1040,7 @@ func (s *Store) AdmitE2EReservation(
 			return failedResponse, err
 		}
 	} else {
+		// not a new setup
 		if index := rsv.Index(req.Index); index != nil {
 			// renewal with index clash
 			failedResponse.Message = s.errNew("already existing e2e index", "id", req.ID.String(),
@@ -1294,6 +1302,7 @@ func (s *Store) CleanupE2EReservation(
 		return failedResponse, s.errWrapStr("obtaining e2e reservation", err,
 			"id", req.ID.String())
 	}
+
 	failedResponse.FailedStep = uint8(rsv.CurrentStep)
 	if err := s.authenticateE2EReq(ctx, req, rsv.Steps, rsv.CurrentStep); err != nil {
 		return nil, s.errWrapStr("error validating request", err, "id", req.ID.String())
@@ -1302,6 +1311,7 @@ func (s *Store) CleanupE2EReservation(
 	if !rsv.IsFirstAS() {
 		if err := s.authenticator.ComputeResponseMAC(ctx, failedResponse,
 			rsv.Steps.SrcIA(), rsv.CurrentStep); err != nil {
+
 			return nil, serrors.WrapStr("authenticating response", err)
 		}
 	}
@@ -1492,18 +1502,24 @@ func validateE2ESteps(localIA addr.IA, rsv *e2e.Reservation, reqSteps base.PathS
 	}
 
 	var currInStitched int
-	for ; currInStitched < len(rsv.SegmentReservations[0].Steps); currInStitched++ {
-		if stitched[currInStitched].IA == localIA &&
-			stitched[currInStitched].Ingress == reqSteps[reqCurrStep].Ingress &&
-			stitched[currInStitched].Egress == reqSteps[reqCurrStep].Egress {
-			break
-		}
-	}
-
 	prebuiltErr := serrors.New("steps validation error, request differs from segments",
 		"local_ia", localIA,
 		"stitched", stitched.String(), "stitch_curr", currInStitched, "stitch_point", isStitchPoint,
 		"req_steps", reqSteps.String(), "req_curr_step", reqCurrStep)
+
+	localASFound := false
+	for ; currInStitched < len(rsv.SegmentReservations[0].Steps); currInStitched++ {
+		if stitched[currInStitched].IA == localIA {
+			if localASFound {
+				return serrors.WrapStr("error: local AS found more than once in steps", prebuiltErr)
+			}
+			localASFound = true
+			if stitched[currInStitched].Ingress == reqSteps[reqCurrStep].Ingress &&
+				stitched[currInStitched].Egress == reqSteps[reqCurrStep].Egress {
+				break
+			}
+		}
+	}
 
 	if currInStitched >= len(stitched) {
 		return serrors.WrapStr("local AS not found", prebuiltErr)
@@ -1827,7 +1843,7 @@ func computeMAC(buff []byte, key cipher.Block, suffix []byte, tok *reservation.T
 // obtainRsvs will query the local DB if the src is local, or dial the corresponding col service.
 // Note that the returned slice could be empty if no segments could reach the destination.
 func (s *Store) obtainRsvs(ctx context.Context, src, dst addr.IA, pathType reservation.PathType) (
-	[]*colibri.ReservationLooks, error) {
+	[]*colibri.SegRDetails, error) {
 
 	if src == s.localIA {
 		segs, err := s.db.GetSegmentRsvsFromSrcDstIA(ctx, src, dst, pathType)
@@ -1921,15 +1937,15 @@ func freeAfterTransfer(ctx context.Context, tx backend.Transaction, rsv *e2e.Res
 	return uint64(avail), nil
 }
 
-func reservationsToLooks(rsvs []*segment.Reservation, localIA addr.IA) []*colibri.ReservationLooks {
-	looks := make([]*colibri.ReservationLooks, len(rsvs))
+func reservationsToLooks(rsvs []*segment.Reservation, localIA addr.IA) []*colibri.SegRDetails {
+	looks := make([]*colibri.SegRDetails, len(rsvs))
 	for i, r := range rsvs {
-		looks[i] = &colibri.ReservationLooks{
-			Id:        r.ID,
-			SrcIA:     localIA,
-			DstIA:     r.Steps.DstIA(),
-			Split:     r.TrafficSplit,
-			PathSteps: r.Steps,
+		looks[i] = &colibri.SegRDetails{
+			Id:    r.ID,
+			SrcIA: localIA,
+			DstIA: r.Steps.DstIA(),
+			Split: r.TrafficSplit,
+			Steps: r.Steps,
 		}
 		if r.ActiveIndex() != nil {
 			looks[i].ExpirationTime = r.ActiveIndex().Expiration

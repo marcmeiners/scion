@@ -32,7 +32,7 @@ type Store interface {
 	Ready() bool
 	// ListReservations is used to get segments to other ASes.
 	ListReservations(ctx context.Context, dstIA addr.IA, pt reservation.PathType) (
-		[]*colibri.ReservationLooks, error)
+		[]*colibri.SegRDetails, error)
 	AdmitSegmentReservation(
 		ctx context.Context,
 		req *sgt.SetupReq,

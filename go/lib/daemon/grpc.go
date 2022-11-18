@@ -199,15 +199,16 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 	}
 	pbReq := &sdpb.ColibriSetupRsvRequest{
 		Base: &colpb.SetupReservationRequest{
-			Id:             translate.PBufID(&req.Id),
-			Index:          uint32(req.Index),
-			Timestamp:      util.TimeToSecs(req.BaseRequest.TimeStamp),
-			SrcHost:        req.SrcHost,
-			DstHost:        req.DstHost,
-			RequestedBw:    uint32(req.RequestedBW),
-			Segments:       pbSegs,
-			PathSteps:      translate.PBufSteps(req.Steps),
-			Authenticators: &colpb.Authenticators{Macs: req.Authenticators},
+			Id:               translate.PBufID(&req.Id),
+			Index:            uint32(req.Index),
+			Timestamp:        util.TimeToSecs(req.BaseRequest.TimeStamp),
+			SrcHost:          req.SrcHost,
+			DstHost:          req.DstHost,
+			RequestedBw:      uint32(req.RequestedBW),
+			Segments:         pbSegs,
+			Steps:            translate.PBufSteps(req.Steps),
+			StepsNoShortcuts: translate.PBufSteps(req.StepsNoShortcuts),
+			Authenticators:   &colpb.Authenticators{Macs: req.Authenticators},
 		},
 	}
 	client := sdpb.NewDaemonServiceClient(c.conn)
