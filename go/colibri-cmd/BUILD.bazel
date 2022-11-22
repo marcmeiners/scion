@@ -11,6 +11,7 @@ go_binary(
 go_library(
     name = "go_default_library",
     srcs = [
+        "index.go",
         "main.go",
         "traceroute.go",
     ],

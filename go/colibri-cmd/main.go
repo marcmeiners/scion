@@ -16,20 +16,29 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
+	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/pkg/app"
 	"github.com/spf13/cobra"
 )
 
-// CommandPather returns the path to a command.
-type CommandPather interface {
-	CommandPath() string
+type RootFlags struct {
+	DebugServerAddr string
+}
+
+func (f RootFlags) DebugServer() (*net.TCPAddr, error) {
+	addr, err := net.ResolveTCPAddr("tcp", f.DebugServerAddr)
+	if err != nil {
+		return nil, serrors.WrapStr("parsing TCP address of the local debug service", err)
+	}
+	return addr, nil
 }
 
 func main() {
-	// Note: code setting up command, etc based on the scion command.
+	// Note: code setting up cobra command, etc based on the "scion" command.
 	executable := filepath.Base(os.Args[0])
 	cmd := &cobra.Command{
 		Use:           executable,
@@ -38,7 +47,10 @@ func main() {
 		SilenceErrors: true,
 	}
 
-	cmd.AddCommand(newTraceroute(cmd))
+	cmd.AddCommand(
+		newTraceroute(cmd),
+		newIndex(),
+	)
 
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -47,4 +59,9 @@ func main() {
 		}
 		os.Exit(2)
 	}
+}
+
+func addRootFlags(cmd *cobra.Command, flags *RootFlags) {
+	cmd.Flags().StringVar(&flags.DebugServerAddr, "dbgsrv", "",
+		"TCP address of the local debug service")
 }

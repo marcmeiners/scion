@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -31,17 +30,17 @@ import (
 )
 
 type traceRouteFlags struct {
-	DebugServerAddr string
+	RootFlags
 }
 
-func newTraceroute(pather CommandPather) *cobra.Command {
+func newTraceroute(parent *cobra.Command) *cobra.Command {
 	var flags traceRouteFlags
 
 	cmd := &cobra.Command{
 		Use:   "traceroute [flags] segR_ID",
 		Short: "Traceroute a segment reservation",
 		Example: fmt.Sprintf("  %s traceroute -dbgsrv 127.0.0.11:31032 ff00:0:113-00000002",
-			pather.CommandPath()),
+			parent.CommandPath()),
 		Long: "'traceroute' will request the segment reservation identified by ID, " +
 			"and send a message to the next AS that appears in it. At every AS the " +
 			"segment reservation is retrieved or an error is issued.",
@@ -50,16 +49,15 @@ func newTraceroute(pather CommandPather) *cobra.Command {
 			return tracerouteCmd(cmd, &flags, args)
 		},
 	}
-	cmd.Flags().StringVar(&flags.DebugServerAddr, "dbgsrv", "",
-		"TCP address of the local debug service")
+	addRootFlags(cmd, &flags.RootFlags)
 
 	return cmd
 }
 
 func tracerouteCmd(cmd *cobra.Command, flags *traceRouteFlags, args []string) error {
-	cliAddr, err := net.ResolveTCPAddr("tcp", flags.DebugServerAddr)
+	cliAddr, err := flags.DebugServer()
 	if err != nil {
-		return serrors.WrapStr("parsing TCP address of the local debug service", err)
+		return err
 	}
 	id, err := reservation.IDFromString(args[0])
 	if err != nil {
