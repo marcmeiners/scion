@@ -1594,7 +1594,7 @@ func (s *Store) admitSegmentReservation(
 		"id", req.ID,
 		"steps", req.Steps,
 		"current", req.CurrentStep,
-		"transport_path", req.TransportPath,
+		"transported_by_colibri?", req.TransportPath != nil,
 	)
 	// Calling to req.Validate() also validates that ingress/egress from dataplane,
 	// matches ingress/egress from req.Steps[req.CurrentStep]

@@ -15,10 +15,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"time"
 
+	"github.com/scionproto/scion/go/co/reservation/translate"
+	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/serrors"
+	sgrpc "github.com/scionproto/scion/go/pkg/grpc"
+	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	"github.com/spf13/cobra"
 )
 
@@ -47,11 +53,10 @@ func newIndex() *cobra.Command {
 
 func newIndexCreate(flags *indexFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "create segR_ID",
+		Use:   "new segR_ID",
 		Short: "Create and confirm a new index",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("args: %v\nflags: %v\n", args, flags)
 			return indexCreateCmd(cmd, flags, args)
 		},
 	}
@@ -73,8 +78,47 @@ func indexCreateCmd(cmd *cobra.Command, flags *indexFlags, args []string) error 
 	}
 	cmd.SilenceUsage = true
 
-	fmt.Printf("Will use debug service at %s and segment with ID %s to create a new index. "+
-		"Will I activate it? %v\n", cliAddr, id, flags.Activate)
+	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
+	defer cancelF()
+
+	grpcDialer := sgrpc.TCPDialer{}
+	conn, err := grpcDialer.Dial(ctx, cliAddr)
+	if err != nil {
+		return serrors.WrapStr("dialing to the local debug service", err)
+	}
+	client := colpb.NewColibriDebugCommandsServiceClient(conn)
+
+	// new index
+	req := &colpb.CmdIndexNewRequest{
+		Id: translate.PBufID(id),
+	}
+	res, err := client.CmdIndexNew(ctx, req)
+	if err != nil {
+		return err
+	}
+	if res.ErrorFound != nil {
+		return serrors.New(
+			fmt.Sprintf("at IA %s: %s\n", addr.IA(res.ErrorFound.Ia), res.ErrorFound.Message))
+	}
+	fmt.Printf("Index with ID %d created", res.Index)
+
+	if flags.Activate {
+		// if activate is requested, do it here
+		req := &colpb.CmdIndexActivateRequest{
+			Id:    translate.PBufID(id),
+			Index: res.Index,
+		}
+		res, err := client.CmdIndexActivate(ctx, req)
+		if err != nil {
+			return err
+		}
+		if res.ErrorFound != nil {
+			return serrors.New(
+				fmt.Sprintf("at IA %s: %s\n", addr.IA(res.ErrorFound.Ia), res.ErrorFound.Message))
+		}
+		fmt.Printf(" and activated")
+	}
+	fmt.Println(".")
 
 	return nil
 }
