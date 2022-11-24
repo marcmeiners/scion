@@ -176,8 +176,15 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 		log.Info("colibri client operator, first segment reservation setup", "egress", egressID)
 	case transport.Path.Type() == colpath.PathType:
 		// prepare remote address with the new path
+		colPath := *transport
+		if transport.Path.InfoField.C {
+			colPath.Dst = *caddr.NewEndpointWithAddr(
+				transport.Dst.IA,
+				addr.SvcCOL.Base(),
+			)
+		}
 		rAddr.Path = snetpath.Colibri{
-			Colibri: *transport,
+			Colibri: colPath,
 		}
 	default:
 		// nothing but colibri or nil is accepted
@@ -190,6 +197,7 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 func (o *ServiceClientOperator) colibriClient(ctx context.Context, rAddr *snet.UDPAddr) (
 	colpb.ColibriServiceClient, error) {
 
+	log.Debug("deleteme about to dial at the operator")
 	conn, err := o.gRPCDialer.Dial(ctx, rAddr)
 	if err != nil {
 		log.Info("error dialing a grpc connection", "addr", rAddr, "err", err)

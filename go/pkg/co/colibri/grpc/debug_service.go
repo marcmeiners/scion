@@ -32,7 +32,6 @@ import (
 	libcol "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/topology"
-	"github.com/scionproto/scion/go/lib/util"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
 
@@ -62,6 +61,30 @@ func NewDebugService(db backend.DB, operator *coliquic.ServiceClientOperator,
 
 func (s *debugService) CmdTraceroute(ctx context.Context, req *colpb.CmdTracerouteRequest,
 ) (*colpb.CmdTracerouteResponse, error) {
+
+	localIA := s.Topo.IA()
+	errF := func(err error) (*colpb.CmdTracerouteResponse, error) {
+		return &colpb.CmdTracerouteResponse{
+			ErrorFound: &colpb.ErrorInIA{
+				Ia:      uint64(localIA),
+				Message: err.Error(),
+			},
+		}, nil
+	}
+	rsv, err := s.getSegR(ctx, req.Id)
+	if err != nil {
+		return errF(err)
+	}
+	log.Debug("deleteme",
+		"path_type", rsv.PathType,
+		"current_step", rsv.CurrentStep,
+		"steps", rsv.Steps,
+	)
+	if rsv.CurrentStep != 0 {
+		return errF(status.Errorf(codes.Internal,
+			"reservation does not start here. Src IA: %s, this AS is at step %d",
+			rsv.Steps.SrcIA(), rsv.CurrentStep))
+	}
 
 	res, err := s.Traceroute(ctx, (*colpb.TracerouteRequest)(req))
 	return (*colpb.CmdTracerouteResponse)(res), err
@@ -183,6 +206,41 @@ func (s *debugService) CmdIndexActivate(ctx context.Context, req *colpb.CmdIndex
 	return &colpb.CmdIndexActivateResponse{}, nil
 }
 
+func (s *debugService) CmdIndexCleanup(ctx context.Context, req *colpb.CmdIndexCleanupRequest,
+) (*colpb.CmdIndexCleanupResponse, error) {
+
+	localIA := s.Topo.IA()
+	errF := func(err error) (*colpb.CmdIndexCleanupResponse, error) {
+		return &colpb.CmdIndexCleanupResponse{
+			ErrorFound: &colpb.ErrorInIA{
+				Ia:      uint64(localIA),
+				Message: err.Error(),
+			},
+		}, nil
+	}
+
+	rsv, err := s.getSegR(ctx, req.Id)
+	if err != nil {
+		return errF(err)
+	}
+	if req.Index > 15 {
+		return errF(status.Errorf(codes.Internal,
+			"bad index number %d, not between 0 and 15", req.Index))
+	}
+
+	cleanupReq := base.NewRequest(s.now(), &rsv.ID, libcol.IndexNumber(req.Index), len(rsv.Steps))
+	res, err := s.Store.InitCleanupSegmentReservation(ctx, cleanupReq, rsv.Steps, rsv.Transport())
+	if err != nil {
+		return errF(status.Errorf(codes.Internal,
+			"cleaning index: %v", err))
+	}
+	if !res.Success() {
+		return errF(status.Errorf(codes.Internal,
+			"failed response: %s", res.(*base.ResponseFailure).Message))
+	}
+	return &colpb.CmdIndexCleanupResponse{}, nil
+}
+
 func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequest,
 ) (*colpb.TracerouteResponse, error) {
 
@@ -230,17 +288,7 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		colAddr.Dst = *caddr.NewEndpointWithAddr(rsv.Steps.DstIA(), addr.SvcCOL.Base())
 
 		// deleteme
-		log.Debug("debug service info about the colibri transport path",
-			"SRC", colAddr.Src,
-			"DST", colAddr.Dst,
-			"S", colAddr.Path.InfoField.S,
-			"C", colAddr.Path.InfoField.C,
-			"R", colAddr.Path.InfoField.R,
-			"expiration", util.SecsToTime(colAddr.Path.InfoField.ExpTick),
-			"curr_hopfield", colAddr.Path.InfoField.CurrHF,
-			"idx", colAddr.Path.InfoField.Ver,
-			"bwcls", colAddr.Path.InfoField.BwCls,
-		)
+		log.Debug("debug service info about the colibri transport path", "", colAddr.String())
 	}
 
 	res := &colpb.TracerouteResponse{}

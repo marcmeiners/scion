@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/scionproto/scion/go/co/reservation/translate"
@@ -46,6 +47,8 @@ func newIndex() *cobra.Command {
 
 	cmd.AddCommand(
 		newIndexCreate(&flags),
+		newIndexActivate(&flags),
+		newIndexCleanup(&flags),
 	)
 
 	return cmd
@@ -63,6 +66,36 @@ func newIndexCreate(flags *indexFlags) *cobra.Command {
 
 	addRootFlags(cmd, &flags.RootFlags)
 	cmd.PersistentFlags().BoolVar(&flags.Activate, "activate", false, "also activate the index")
+
+	return cmd
+}
+
+func newIndexActivate(flags *indexFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "activate segR_ID index_number",
+		Short: "Activate an existing index",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return indexActivateCmd(cmd, flags, args)
+		},
+	}
+
+	addRootFlags(cmd, &flags.RootFlags)
+
+	return cmd
+}
+
+func newIndexCleanup(flags *indexFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cleanup segR_ID index_number",
+		Short: "Cleanup an existing index",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return indexCleanupCmd(cmd, flags, args)
+		},
+	}
+
+	addRootFlags(cmd, &flags.RootFlags)
 
 	return cmd
 }
@@ -100,15 +133,49 @@ func indexCreateCmd(cmd *cobra.Command, flags *indexFlags, args []string) error 
 		return serrors.New(
 			fmt.Sprintf("at IA %s: %s\n", addr.IA(res.ErrorFound.Ia), res.ErrorFound.Message))
 	}
-	fmt.Printf("Index with ID %d created", res.Index)
+	fmt.Printf("Index with ID %d created.\n", res.Index)
 
 	if flags.Activate {
-		// if activate is requested, do it here
-		req := &colpb.CmdIndexActivateRequest{
-			Id:    translate.PBufID(id),
-			Index: res.Index,
+		return activateIdx(ctx, client, translate.PBufID(id), res.Index)
+	}
+
+	return nil
+}
+
+func activateIdx(ctx context.Context, client colpb.ColibriDebugCommandsServiceClient,
+	segID *colpb.ReservationID, idx uint32) error {
+
+	// new index
+	req := &colpb.CmdIndexActivateRequest{
+		Id:    segID,
+		Index: idx,
+	}
+	res, err := client.CmdIndexActivate(ctx, req)
+	if err != nil {
+		return err
+	}
+	if res.ErrorFound != nil {
+		return serrors.New(
+			fmt.Sprintf("at IA %s: %s\n", addr.IA(res.ErrorFound.Ia), res.ErrorFound.Message))
+	}
+	fmt.Printf("Index with ID %d activated.\n", idx)
+	return nil
+}
+
+func indexActivateCmd(cmd *cobra.Command, flags *indexFlags, args []string) error {
+	return requestWithIndex(cmd, flags, args, activateIdx)
+}
+
+func indexCleanupCmd(cmd *cobra.Command, flags *indexFlags, args []string) error {
+	cleanupFcn := func(ctx context.Context, client colpb.ColibriDebugCommandsServiceClient,
+		segID *colpb.ReservationID, idx uint32) error {
+
+		// new index
+		req := &colpb.CmdIndexCleanupRequest{
+			Id:    segID,
+			Index: idx,
 		}
-		res, err := client.CmdIndexActivate(ctx, req)
+		res, err := client.CmdIndexCleanup(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -116,9 +183,41 @@ func indexCreateCmd(cmd *cobra.Command, flags *indexFlags, args []string) error 
 			return serrors.New(
 				fmt.Sprintf("at IA %s: %s\n", addr.IA(res.ErrorFound.Ia), res.ErrorFound.Message))
 		}
-		fmt.Printf(" and activated")
+		fmt.Printf("Index with ID %d cleaned up.\n", idx)
+		return nil
 	}
-	fmt.Println(".")
+	return requestWithIndex(cmd, flags, args, cleanupFcn)
+}
 
-	return nil
+func requestWithIndex(cmd *cobra.Command, flags *indexFlags, args []string,
+	fcn func(ctx context.Context, client colpb.ColibriDebugCommandsServiceClient,
+		segID *colpb.ReservationID, idx uint32) error,
+) error {
+	cliAddr, err := flags.DebugServer()
+	if err != nil {
+		return err
+	}
+	id, err := reservation.IDFromString(args[0])
+	if err != nil {
+		return serrors.WrapStr("parsing the ID of the segment reservation", err)
+	}
+	idx, err := strconv.Atoi(args[1])
+	if err != nil {
+		return serrors.WrapStr("parsing the index number", err)
+	}
+	if idx < 0 || idx > 15 {
+		return serrors.New("index number must be between 0 and 15")
+	}
+	cmd.SilenceUsage = true
+
+	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
+	defer cancelF()
+
+	grpcDialer := sgrpc.TCPDialer{}
+	conn, err := grpcDialer.Dial(ctx, cliAddr)
+	if err != nil {
+		return serrors.WrapStr("dialing to the local debug service", err)
+	}
+	client := colpb.NewColibriDebugCommandsServiceClient(conn)
+	return fcn(ctx, client, translate.PBufID(id), uint32(idx))
 }
