@@ -275,15 +275,15 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 				return errF(status.Errorf(codes.Internal,
 					"error retrieving path at transit: %s", err))
 			}
-			log.Debug("deleteme got a colibri transport from the network",
-				"SRC", colAddr.Src,
-				"DST", colAddr.Dst,
-				"PATH", colAddr.Path,
-			)
 		}
 		if colAddr == nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "there is no colibri transport"))
 		}
+		log.Debug("deleteme got a colibri transport from the network",
+			"SRC", colAddr.Src,
+			"DST", colAddr.Dst,
+			"PATH", colAddr.Path,
+		)
 		// complete the destination address with the destination stored in the reservation
 		colAddr.Dst = *caddr.NewEndpointWithAddr(rsv.Steps.DstIA(), addr.SvcCOL.Base())
 
