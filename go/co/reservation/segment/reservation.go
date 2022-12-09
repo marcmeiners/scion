@@ -58,10 +58,6 @@ func (r *Reservation) Egress() uint16 {
 	return r.Steps[r.CurrentStep].Egress
 }
 
-func (r *Reservation) Transport() *colpath.ColibriPathMinimal {
-	return r.TransportPath
-}
-
 // DeriveColibriPathAtSource creates the ColibriPathMinimal from the active index in this
 // reservation. If there is no active index, the path is nil. This function is expected
 // to be called by the src of the reservation. Note that the src is not necesarely the

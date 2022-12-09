@@ -260,9 +260,9 @@ func (s *Store) InitSegmentReservation(ctx context.Context, req *segment.SetupRe
 		var res base.Response
 		var err error
 		if newSetup {
-			res, err = s.InitTearDownSegmentReservation(ctx, baseReq, origSteps, req.Transport())
+			res, err = s.InitTearDownSegmentReservation(ctx, baseReq, origSteps, req.TransportPath)
 		} else {
-			res, err = s.InitCleanupSegmentReservation(ctx, baseReq, origSteps, req.Transport())
+			res, err = s.InitCleanupSegmentReservation(ctx, baseReq, origSteps, req.TransportPath)
 		}
 		if err != nil {
 			log.Info("while cleaning reservations down the path an error occurred",
@@ -287,7 +287,6 @@ func (s *Store) InitSegmentReservation(ctx context.Context, req *segment.SetupRe
 		rsv.TrafficSplit = req.SplitCls
 		rsv.Steps = req.Steps
 		rsv.CurrentStep = req.CurrentStep
-		rsv.TransportPath = req.TransportPath
 
 		if err := s.db.NewSegmentRsv(ctx, rsv); err != nil {
 			return s.errWrapStr("initial reservation creation", err, "dst", rsv.Steps.DstIA())
@@ -486,8 +485,6 @@ func (s *Store) ConfirmSegmentReservation(
 		return nil, serrors.New("no reservation found")
 	}
 
-	patchColibriTransport(transport, rsv.Steps)
-
 	currentStep := rsv.CurrentStep
 	steps := rsv.Steps
 	egress := rsv.Egress()
@@ -594,7 +591,7 @@ func (s *Store) ActivateSegmentReservation(
 	transport *colpath.ColibriPathMinimal,
 ) (base.Response, error) {
 
-	log.Debug("activating segment index", "transport", transport.String())
+	log.Debug("activating segment index", "transport", transport)
 	// TODO: pack the common code to this segment-related functions
 	if req.ID.ASID == 0 {
 		return nil, serrors.New("bad AS id in request")
@@ -612,8 +609,6 @@ func (s *Store) ActivateSegmentReservation(
 	if rsv == nil {
 		return nil, serrors.New("no reservation found")
 	}
-
-	patchColibriTransport(transport, rsv.Steps)
 
 	currentStep := rsv.CurrentStep
 	steps := rsv.Steps
@@ -744,7 +739,7 @@ func (s *Store) CleanupSegmentReservation(
 	transport *colpath.ColibriPathMinimal,
 ) (base.Response, error) {
 
-	log.Debug("cleaning segment index up", "transport", transport.String())
+	log.Debug("cleaning segment index up", "transport", transport)
 	// TODO: pack the common code to this segment-related functions
 	if req.ID.ASID == 0 {
 		return nil, serrors.New("bad AS id in request")
@@ -762,8 +757,6 @@ func (s *Store) CleanupSegmentReservation(
 	if rsv == nil {
 		return nil, serrors.New("no reservation found")
 	}
-
-	patchColibriTransport(transport, rsv.Steps)
 
 	currentStep := rsv.CurrentStep
 	steps := rsv.Steps
@@ -894,8 +887,6 @@ func (s *Store) TearDownSegmentReservation(
 	if rsv == nil {
 		return nil, serrors.New("no reservation found")
 	}
-
-	patchColibriTransport(transport, rsv.Steps)
 
 	currentStep := rsv.CurrentStep
 	steps := rsv.Steps
@@ -1751,8 +1742,7 @@ func (s *Store) getTokenFromDownstreamAdmission(
 		return nil, serrors.WrapStr("computing in transit seg. setup authenticator", err)
 	}
 
-	transport := req.Transport()
-	patchColibriTransport(transport, req.Steps)
+	transport := req.TransportPath
 
 	client, err := s.operator.ColibriClient(ctx, req.Egress(), transport)
 	if err != nil {
@@ -1811,13 +1801,10 @@ func (s *Store) sendUpstreamForAdmission(
 		return s.admitSegmentReservation(ctx, req)
 	}
 
-	transport := req.Transport()
-	patchColibriTransport(transport, req.Steps)
-
 	// if this is not the source of the traffic of the SegR (first step), then
 	// forward to next colibri service upstream; note that because it travels in reverse,
 	// the outbound traffic goes through the ingress interface in the request:
-	client, err := s.operator.ColibriClient(ctx, req.Ingress(), transport)
+	client, err := s.operator.ColibriClient(ctx, req.Ingress(), req.TransportPath)
 	if err != nil {
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
@@ -2010,26 +1997,6 @@ func pathFromSegmentRsv(rsv *segment.Reservation) (*colpath.ColibriPathMinimal, 
 		return rsv.DeriveColibriPathAtDestination(), nil
 	}
 	return rsv.DeriveColibriPathAtSource(), nil
-}
-
-// patchColibriTransport is at temporary fix:
-// We lost the information about the destination of the packet when we parsed
-// the SCION layer. Now we can't recover it.
-// But since the transport used for this RPC must be an index of the reservation, we know
-// that the steps are the same as in the reservation.
-// We further know that the destination has to be a colibri service.
-// Fix those two fields.
-func patchColibriTransport(transport *colpath.ColibriPathMinimal, steps base.PathSteps) {
-	return
-	// if transport == nil {
-	// 	return
-	// }
-	// if !transport.InfoField.S {
-	// 	// TODO(juagargi) obtain the destination address from the scion layer and pass it along
-	// 	// embedded in the UDPAddr (other options?)
-	// 	panic("this patch won't work for EERs")
-	// }
-	// // transport.Dst = *caddr.NewEndpointWithAddr(steps.DstIA(), addr.SvcCOL.Base())
 }
 
 // assert performs an assertion on an invariant. An assertion is part of the documentation.

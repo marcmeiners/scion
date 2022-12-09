@@ -259,7 +259,7 @@ func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error
 	if req.PathType == reservation.DownPath {
 		steps = steps.Reverse()
 	}
-	transport := req.Transport()
+	transport := req.TransportPath
 	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, transport)
 
 	if err != nil || !res.Success() {

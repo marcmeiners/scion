@@ -169,7 +169,8 @@ func (s *debugService) CmdIndexNew(ctx context.Context, req *colpb.CmdIndexNewRe
 	if renewReq.PathType == libcol.DownPath {
 		steps = steps.Reverse()
 	}
-	res, err := s.Store.InitConfirmSegmentReservation(ctx, confirmReq, steps, renewReq.Transport())
+	res, err := s.Store.InitConfirmSegmentReservation(ctx, confirmReq, steps,
+		renewReq.TransportPath)
 	if err != nil {
 		return errF(status.Errorf(codes.Internal,
 			"confirming index: %v", err))
@@ -208,7 +209,8 @@ func (s *debugService) CmdIndexActivate(ctx context.Context, req *colpb.CmdIndex
 	}
 
 	activateReq := base.NewRequest(s.now(), &rsv.ID, libcol.IndexNumber(req.Index), len(rsv.Steps))
-	res, err := s.Store.InitActivateSegmentReservation(ctx, activateReq, rsv.Steps, rsv.Transport())
+	res, err := s.Store.InitActivateSegmentReservation(ctx, activateReq, rsv.Steps,
+		rsv.TransportPath)
 	if err != nil {
 		return errF(status.Errorf(codes.Internal,
 			"activating index: %v", err))
@@ -243,7 +245,7 @@ func (s *debugService) CmdIndexCleanup(ctx context.Context, req *colpb.CmdIndexC
 	}
 
 	cleanupReq := base.NewRequest(s.now(), &rsv.ID, libcol.IndexNumber(req.Index), len(rsv.Steps))
-	res, err := s.Store.InitCleanupSegmentReservation(ctx, cleanupReq, rsv.Steps, rsv.Transport())
+	res, err := s.Store.InitCleanupSegmentReservation(ctx, cleanupReq, rsv.Steps, rsv.TransportPath)
 	if err != nil {
 		return errF(status.Errorf(codes.Internal,
 			"cleaning index: %v", err))

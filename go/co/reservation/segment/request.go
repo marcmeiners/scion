@@ -137,10 +137,6 @@ func (r *SetupReq) TakeStep() {
 	r.CurrentStep += inc
 }
 
-func (r *SetupReq) Transport() *colibri.ColibriPathMinimal {
-	return r.TransportPath
-}
-
 func (r *SetupReq) Len() int {
 	// basic_request + steps len + expTime + RLC + pathType + minBW + maxBW + splitCls + pathProps
 	return r.Request.Len() + r.Steps.Size() + 4 + 1 + 1 + 1 + 1 + 1 + 1
