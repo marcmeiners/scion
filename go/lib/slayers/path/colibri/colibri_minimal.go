@@ -66,14 +66,19 @@ func (c *ColibriPathMinimal) String() string {
 	if c == nil {
 		return "(nil)"
 	}
-	var as addr.AS
-	if c.Src != nil {
-		as = c.Src.IA.AS()
+	var asid addr.AS
+
+	switch {
+	case !c.InfoField.R && c.Src != nil:
+		asid = c.Src.IA.AS()
+	case c.InfoField.R && c.Dst != nil:
+		asid = c.Dst.IA.AS()
 	}
 	ID := reservation.ID{
-		ASID:   as,
+		ASID:   asid,
 		Suffix: c.InfoField.ResIdSuffix,
 	}
+
 	inf := c.InfoField
 	return fmt.Sprintf("%s -> %s [ID: %s,Idx: %d] (#HFs:%d,CurrHF:%d,S:%v C:%v R:%v)",
 		c.Src, c.Dst, ID, inf.Ver, inf.HFCount, inf.CurrHF, inf.S, inf.C, inf.R)

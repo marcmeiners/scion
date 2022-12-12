@@ -80,12 +80,18 @@ func (s *debugService) CmdTraceroute(ctx context.Context, req *colpb.CmdTracerou
 		"current_step", rsv.CurrentStep,
 		"steps", rsv.Steps,
 	)
-	if (rsv.CurrentStep != 0 && rsv.PathType != libcol.DownPath) ||
-		(rsv.CurrentStep != len(rsv.Steps)-1 && rsv.PathType == libcol.DownPath) {
+	// fail if ¬( 0 OR (down AND last) ) = ¬0 AND ¬(down AND last) ¡ ¬0 AND (¬down OR ¬last)
+	if (rsv.CurrentStep != 0) &&
+		(rsv.PathType != libcol.DownPath || rsv.CurrentStep != len(rsv.Steps)-1) {
 
 		return errF(status.Errorf(codes.Internal,
-			"reservation does not start here. Src IA: %s, this AS is at step %d",
-			rsv.Steps.SrcIA(), rsv.CurrentStep))
+			"reservation does not start here. Src IA: %s, type: %s, this AS is at step %d",
+			rsv.Steps.SrcIA(), rsv.PathType, rsv.CurrentStep))
+	}
+
+	if rsv.PathType == libcol.DownPath && rsv.CurrentStep == len(rsv.Steps)-1 {
+		// At the end of a down path segment: means we want to walk the segment in reverse.
+		req.DownDirection = true
 	}
 
 	if rsv.TransportPath != nil {
@@ -275,23 +281,17 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		return errF(err)
 	}
 
-	// Because the steps were stored in the direction of the traffic, we need to perform a
-	// reversion of them if the segment is a down-path one, as we use it in the reverse direction.
-	// The same applies to source and destination IAs, that also come from the steps.
-	egress := rsv.Egress()
-	if rsv.PathType == libcol.DownPath {
-		egress = rsv.Ingress()
-	}
-	initiator := (rsv.CurrentStep == 0 && rsv.PathType != libcol.DownPath) ||
-		rsv.CurrentStep == len(rsv.Steps)-1 && rsv.PathType == libcol.DownPath
+	initiator := rsv.CurrentStep == 0 ||
+		(rsv.PathType == libcol.DownPath && rsv.CurrentStep == len(rsv.Steps)-1)
+
+	// only walk the reservation in reverse if it is a down path one and requested to do so.
+	walkInReverse := req.DownDirection && rsv.PathType == libcol.DownPath
 
 	var transport *colpath.ColibriPathMinimal
 	if req.UseColibri {
 		if initiator {
 			// retrieve the colibri transport path here (this AS is source or initiator)
-			if rsv.TransportPath != nil {
-				transport = rsv.TransportPath
-			}
+			transport = rsv.TransportPath
 		} else {
 			transport, err = colAddrFromCtx(ctx)
 			if err != nil {
@@ -310,6 +310,11 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 
 		// deleteme
 		log.Debug("debug service info about the colibri transport path", "", transport.String())
+	}
+
+	egress := rsv.Egress()
+	if walkInReverse {
+		egress = rsv.Ingress()
 	}
 
 	res := &colpb.TracerouteResponse{}

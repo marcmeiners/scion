@@ -113,7 +113,8 @@ func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinima
 	p.Src = caddr.NewEndpointWithAddr(steps.SrcIA(), addr.SvcCOL.Base())
 	p.Dst = caddr.NewEndpointWithAddr(steps.DstIA(), addr.SvcCOL.Base())
 	// deleteme
-	fmt.Println("--------------------------------------------", r.ID.String())
+	fmt.Printf("-------------------------------------------- %s (reversed?=%v)\n",
+		r.ID.String(), reverse)
 	fmt.Printf("Curr HF = %d, # Hop Fields = %d\n", p.InfoField.CurrHF, p.InfoField.HFCount)
 	for i, hf := range p.HopFields {
 		fmt.Printf("[%d] in:%d eg:%d MAC: %s\n", i, hf.IngressId, hf.EgressId, hex.EncodeToString(hf.Mac))
@@ -127,7 +128,8 @@ func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinima
 	// deleteme:
 	buff := make([]byte, min.Len())
 	min.SerializeTo(buff)
-	fmt.Printf("%s -> %s\n", r.ID, hex.EncodeToString(buff))
+	fmt.Printf("%s -> %s\n", r.ID, min)
+	fmt.Printf("%s ->> %s\n", r.ID, hex.EncodeToString(buff))
 	return min
 }
 
@@ -309,7 +311,7 @@ func (r *Reservation) RemoveIndex(idx reservation.IndexNumber) error {
 }
 
 func (r *Reservation) String() string {
-	return fmt.Sprintf("%s, Idxs: [%s]", r.ID.String(), r.Indices)
+	return fmt.Sprintf("%s [%s, %d index(es)]", r.ID.String(), r.PathType, len(r.Indices))
 }
 
 // MaxBlockedBW returns the maximum bandwidth blocked by this reservation, which is

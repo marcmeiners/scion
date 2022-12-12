@@ -51,6 +51,8 @@ message CmdTracerouteRequest {
     ReservationID id = 1;
     // always use COLIBRI as transport while performing the traceroute.
     bool use_colibri = 2;
+    // if down path segment, do a reverse traversal when set.
+    bool down_direction = 3;
 }
 message CmdTracerouteResponse {
     // requested segR for traceroute.
@@ -107,6 +109,8 @@ message TracerouteRequest {
     ReservationID id = 1;
     // always use COLIBRI as transport while performing the traceroute.
     bool use_colibri = 2;
+    // if down path segment, do a reverse traversal when set.
+    bool down_direction = 3;
 }
 message TracerouteResponse {
     // requested segR for traceroute.
