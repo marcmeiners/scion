@@ -80,6 +80,14 @@ func (r *SetupReq) Validate(getNeighborIA func(ifaceID uint16) addr.IA) error {
 	if err := r.Steps.ValidateEquivalent(r.TransportPath, r.CurrentStep); err != nil {
 		return serrors.WrapStr("invalid steps/raw path", err)
 	}
+
+	// AS ID being the source of the traffic?
+	if r.ID.ASID != r.Steps.SrcIA().AS() {
+		return serrors.New("bad reservation AS id, is not the source",
+			"as", r.ID.ASID,
+			"source", r.Steps.SrcIA().AS())
+	}
+
 	// previous IA correct?
 	if r.CurrentStep > 0 &&
 		getNeighborIA(r.Ingress()) != r.Steps[r.CurrentStep-1].IA {

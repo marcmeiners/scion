@@ -217,11 +217,8 @@ func (s *Store) ListStitchableSegments(ctx context.Context, dst addr.IA) (
 // InitSegmentReservation will start a new segment reservation request. The source of
 // the request will have this very AS as source.
 func (s *Store) InitSegmentReservation(ctx context.Context, req *segment.SetupReq) error {
-	if req.ID.IsEmpty() {
-		return s.errNew("bad empty ID")
-	}
-	if req.ID.ASID != s.localIA.AS() {
-		return s.errNew("bad reservation id", "as", req.ID.ASID)
+	if err := req.Validate(s.operator.Neighbor); err != nil {
+		return s.errNew("request failed validation", err)
 	}
 
 	newSetup := req.ID.IsEmptySuffix()
@@ -1612,7 +1609,7 @@ func (s *Store) admitSegmentReservation(
 		"current", req.CurrentStep,
 		"transported_by_colibri?", req.TransportPath != nil,
 	)
-	// Calling to req.Validate() also validates that ingress/egress from dataplane,
+	// Calling to req.Validate() also validates that ingress/egress from dataplane
 	// matches ingress/egress from req.Steps[req.CurrentStep]
 	if err := req.Validate(s.operator.Neighbor); err != nil {
 		failedResponse.Message = s.errWrapStr("request failed validation", err).Error()
