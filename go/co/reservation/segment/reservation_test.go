@@ -375,6 +375,12 @@ func TestDeriveColibriPathAtDestination(t *testing.T) {
 			colPath := colibriMinimalToRegular(t, tc.SegR.DeriveColibriPathAtDestination())
 			// Because the SCION layer reverses the src and dst ASes, simulate it here:
 			srcAS, dstAS = dstAS, srcAS
+			// also reverse the order of the keys per AS, so that they are picked up correctly
+			for i := 0; i < len(colibriKeys)/2; i++ {
+				colibriKeys[i], colibriKeys[len(colibriKeys)-i-1] =
+					colibriKeys[len(colibriKeys)-i-1], colibriKeys[i]
+			}
+
 			test.VerifyMACs(t, colPath, colibriKeys, srcAS, dstAS)
 		})
 	}

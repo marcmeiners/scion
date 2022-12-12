@@ -730,20 +730,12 @@ func (t *Token) ToRaw() []byte {
 	return buff
 }
 
-// AddNewHopField adds a new hopfield to the token. Depending on the type of the path (up,
-// down, core, etc) the added hop field will end up at the beginning or end of the list.
+// AddNewHopField adds a new hopfield to the token. The added token is prepended to the list
+// of existing tokens, so that it is at the beginning of the list.
 // The function returns a pointer to the new (copied) hop field inside the token.
 func (t *Token) AddNewHopField(hf *HopField) *HopField {
-	switch t.InfoField.PathType {
-	case DownPath:
-		t.HopFields = append(t.HopFields, *hf)
-		hf = &t.HopFields[len(t.HopFields)-1]
-	case UpPath, CorePath, E2EPath:
-		t.HopFields = append([]HopField{*hf}, t.HopFields...)
-		hf = &t.HopFields[0]
-	default:
-		panic(fmt.Sprintf("unknown path type %v", t.InfoField.PathType))
-	}
+	t.HopFields = append([]HopField{*hf}, t.HopFields...)
+	hf = &t.HopFields[0]
 	return hf
 }
 

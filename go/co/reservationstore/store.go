@@ -660,6 +660,10 @@ func (s *Store) ActivateSegmentReservation(
 		// the traffic to e.g. renew the segment, we must always store the tokens in the initiator.
 		// Conversely we must also store the token in the source of the traffic, as any EER
 		// that may be created by stitching the segment will need it in the source.
+		// In total, there are three cases where we store the tokens:
+		// 1. ¬down AND currStep=0
+		// 2.  down AND currStep=0
+		// 3.  down AND currStep=last_step
 		var err error
 		rsv.TransportPath, err = pathFromSegmentRsv(rsv)
 		if err != nil {
@@ -2023,7 +2027,7 @@ func pathFromSegmentRsv(rsv *segment.Reservation) (*colpath.ColibriPathMinimal, 
 	}
 
 	if rsv.CurrentStep != 0 {
-		// this must be the destination of a down-path segment
+		// This must be the destination of a down-path segment.
 		assert(rsv.CurrentStep == len(rsv.Steps)-1, "path should be derived only at the source "+
 			"of the traffic (any case) or at the initiator (down-path), which must be the "+
 			"destination of the traffic. Details of the reservation: ID: %s, type: %s, "+

@@ -94,18 +94,6 @@ func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinima
 	steps := r.Steps
 	if reverse {
 		steps = steps.Reverse()
-		// The hop fields were stacked in the reverse direction of the traffic.
-		// If reverse is true, the function was called from the destination of the traffic.
-		// E.g. for the tiny topology, a down-path initiated in 111 to 110 can be derived at
-		// 111 as destination. But the hop fields are reversed, so before calling any action
-		// on the path, we reconstruct the path 110->111 as seen from 110 by just converting
-		// the stack with 111 at the bottom (beginning of the array) to a list with 110 at
-		// beginning. This is equivalent to just reverse the array.
-		hfc := len(p.HopFields)
-		for i := 0; i < hfc/2; i++ {
-			// reverse order (do not touch the ingress and egress interfaces)
-			p.HopFields[i], p.HopFields[hfc-i-1] = p.HopFields[hfc-i-1], p.HopFields[i]
-		}
 		if _, err := p.Reverse(); err != nil {
 			return nil
 		}
