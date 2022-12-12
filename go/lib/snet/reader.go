@@ -22,7 +22,6 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
-	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 )
 
@@ -122,13 +121,13 @@ func (c *scionConnReader) read(b []byte) (int, net.Addr, error) {
 		return 0, nil, serrors.New("invalid type of host in packet",
 			"type", fmt.Sprintf("%T", pkt.Source.Host))
 	}
-	log.Debug("deleteme have read with snet",
-		"n", n,
-		"remote", remoteAddr,
-		"type", fmt.Sprintf("%T", remoteAddr),
-		"pkt.Source", pkt.Source,
-		"pkt.Destination", pkt.Destination,
-	)
+	// log.Debug("deleteme have read with snet",
+	// 	"n", n,
+	// 	"remote", remoteAddr,
+	// 	"type", fmt.Sprintf("%T", remoteAddr),
+	// 	"pkt.Source", pkt.Source,
+	// 	"pkt.Destination", pkt.Destination,
+	// )
 	return n, remoteAddr, nil
 }
 

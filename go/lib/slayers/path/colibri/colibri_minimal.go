@@ -19,7 +19,6 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
-	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers/path"
 	caddr "github.com/scionproto/scion/go/lib/slayers/path/colibri/addr"
@@ -264,7 +263,7 @@ func (c *ColibriPathMinimal) Reverse() (path.Path, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("deleteme colibri path is reversed", "reversed", colibriPath)
+	// log.Debug("deleteme colibri path is reversed", "reversed", colibriPath)
 	return colibriPath.ToMinimal()
 }
 
