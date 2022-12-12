@@ -1035,7 +1035,7 @@ func (s *Store) AdmitE2EReservation(
 			ID:                  req.ID,
 			Steps:               req.Steps,
 			CurrentStep:         req.CurrentStep,
-			SegmentReservations: make([]*segment.Reservation, 0),
+			SegmentReservations: make([]*segment.Reservation, 0, 2),
 		}
 		for _, id := range req.SegmentRsvs {
 			r, err := tx.GetSegmentRsvFromID(ctx, &id)
@@ -1078,6 +1078,12 @@ func (s *Store) AdmitE2EReservation(
 			"req_steps", req.Steps.String(), "rsv_steps", rsv.Steps.String())
 		failedResponse.Message = err.Error()
 		return failedResponse, err
+	}
+
+	log.Debug("loaded segments", "count", len(rsv.SegmentReservations))
+	for i, seg := range rsv.SegmentReservations {
+		log.Debug("loaded segment", fmt.Sprintf("seg[%d]/%d", i, len(rsv.SegmentReservations)), seg,
+			fmt.Sprintf("transport[%d]", i), seg.TransportPath)
 	}
 
 	isStitchPoint := rsv.IsStitchPoint(s.localIA)
@@ -1160,10 +1166,21 @@ func (s *Store) AdmitE2EReservation(
 		},
 	}
 
-	// Check dataplane path
-	if err := rsv.Steps.ValidateEquivalent(transport, rsv.CurrentStep); err != nil {
-		return nil, err
+	switch {
+	case rsv.CurrentStep == 0:
+		// This AS is the source of the traffic and the initiator.
+		transport = rsv.SegmentReservations[0].DeriveColibriPathAtSource()
+	case isStitchPoint:
+		// At stitch points we use the next segment.
+		req.CurrentSegmentRsvIndex++
+		transport = rsv.SegmentReservations[1].DeriveColibriPathAtSource()
+	default:
+		// ASes that are not the initiator or stitch points need to check the dataplane path.
+		if err := rsv.Steps.ValidateEquivalent(transport, rsv.CurrentStep); err != nil {
+			return nil, err
+		}
 	}
+	log.Debug("deleteme using transport", "transport", transport)
 
 	var ingress, egress uint16
 	if req.IsLastAS() {
@@ -1208,20 +1225,6 @@ func (s *Store) AdmitE2EReservation(
 		res.Authenticators = make([][]byte, len(rsv.Steps)) // same size as path
 		token = index.Token
 	} else { // this is not the last AS
-		if s.localIA.Equal(rsv.Steps.SrcIA()) {
-			r, err := tx.GetSegmentRsvFromID(ctx, &req.SegmentRsvs[req.CurrentSegmentRsvIndex])
-			if err != nil {
-				return nil, err
-			}
-			transport = r.DeriveColibriPathAtSource()
-		} else if isStitchPoint {
-			req.CurrentSegmentRsvIndex++
-			rNext, err := tx.GetSegmentRsvFromID(ctx, &req.SegmentRsvs[req.CurrentSegmentRsvIndex])
-			if err != nil {
-				return nil, err
-			}
-			transport = rNext.DeriveColibriPathAtSource()
-		}
 		ingress = rsv.Ingress()
 		egress = rsv.Egress()
 		// authenticate request for the destination AS
@@ -1230,7 +1233,7 @@ func (s *Store) AdmitE2EReservation(
 		}
 		// deleteme BUG here using a segR to contact the next colSrv when stitch point;
 		// the bug is present also in E2E cleanup, maybe in some other segR RPC as well
-		// client, err := s.operator.ColibriClient(ctx, egress, transportPath)
+		// client, err := s.operator.ColibriClient(ctx, egress, transport)
 		client, err := s.operator.ColibriClient(ctx, egress, nil)
 		if err != nil {
 			return nil, serrors.WrapStr("while finding a colibri service client", err)
@@ -1981,6 +1984,7 @@ func pathFromSegmentRsv(rsv *segment.Reservation) (*colpath.ColibriPathMinimal, 
 		return nil, serrors.New("reservations has an expired active index", "id", rsv.ID,
 			"expiration", rsv.ActiveIndex().Expiration)
 	}
+
 	if rsv.CurrentStep != 0 {
 		// this must be the destination of a down-path segment
 		assert(rsv.CurrentStep == len(rsv.Steps)-1, "path should be derived only at the source "+
