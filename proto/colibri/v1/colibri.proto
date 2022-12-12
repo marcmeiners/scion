@@ -167,6 +167,10 @@ message SegmentSetupRequest {
 }
 
 message SegmentSetupResponse {
+    // the reservation ID the response refers to. Necessary for identifying
+    // downpath segments initiated at the end of the reservation path.
+    ReservationID id = 1;
+
     message Failure {
         // the basic failure field: error code, message and failing AS index.
         Response.Failure failure = 1;
@@ -176,14 +180,14 @@ message SegmentSetupResponse {
 
     oneof success_failure {
         // the token to store at the source of the reservation, if successful.
-        bytes token = 1;
+        bytes token = 2;
         // if failure, this field will not be null, and will contain the failure message.
-        Failure failure = 2;
+        Failure failure = 3;
     }
     // the timestamp when the response was issued.
-    uint32 timestamp = 3;
+    uint32 timestamp = 4;
     // drkey authenticators.
-    Authenticators authenticators = 4;
+    Authenticators authenticators = 5;
 }
 
 message ConfirmSegmentIndexRequest {

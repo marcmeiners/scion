@@ -275,21 +275,6 @@ func (s *Store) InitSegmentReservation(ctx context.Context, req *segment.SetupRe
 		}
 		log.Debug("reservation has been rollback", "new_setup", newSetup)
 	}
-	// create new reservation in DB
-	if rsv == nil { // new setup
-		rsv = segment.NewReservation(req.ID.ASID)
-		rsv.ID = req.ID
-		rsv.PathType = req.PathType
-		rsv.PathEndProps = req.PathProps
-		rsv.TrafficSplit = req.SplitCls
-		rsv.Steps = req.Steps
-		rsv.CurrentStep = req.CurrentStep
-
-		if err := s.db.NewSegmentRsv(ctx, rsv); err != nil {
-			return s.errWrapStr("initial reservation creation", err, "dst", rsv.Steps.DstIA())
-		}
-		req.ID = rsv.ID // the DB created a new suffix for the rsv.; copy it to the request
-	}
 
 	var res segment.SegmentSetupResponse
 	if req.PathType == reservation.DownPath {
@@ -301,8 +286,30 @@ func (s *Store) InitSegmentReservation(ctx context.Context, req *segment.SetupRe
 		// the last AS of the path to re-start the request process from there, as the
 		// admission must be computed in the direction of the reservation.
 		req.ReverseTraveling = true
+		// the current step must have been set to the last AS in the steps
+		if req.CurrentStep != len(req.Steps)-1 {
+			return serrors.New("error initiating down path reservation: bad current step",
+				"curr_step", req.CurrentStep)
+		}
 		res, err = s.sendUpstreamForAdmission(ctx, req)
 	} else {
+		// Create new reservation in DB iff not down-path. For down-path ones, it'll be created
+		// on the sendUpstreamForAdmission method.
+		if rsv == nil { // new setup
+			rsv = segment.NewReservation(req.ID.ASID)
+			rsv.ID = req.ID
+			rsv.PathType = req.PathType
+			rsv.PathEndProps = req.PathProps
+			rsv.TrafficSplit = req.SplitCls
+			rsv.Steps = req.Steps
+			rsv.CurrentStep = req.CurrentStep
+
+			if err := s.db.NewSegmentRsv(ctx, rsv); err != nil {
+				return s.errWrapStr("initial reservation creation", err, "dst", rsv.Steps.DstIA())
+			}
+			req.ID = rsv.ID // the DB created a new suffix for the rsv.; copy it to the request
+		}
+
 		err = s.authenticator.ComputeSegmentSetupRequestInitialMAC(ctx, req)
 		if err != nil {
 			return err
@@ -1588,6 +1595,7 @@ func (s *Store) admitSegmentReservation(
 			Timestamp:      req.Timestamp,
 			Authenticators: make([][]byte, len(req.Authenticators)),
 		},
+		ID:            &req.ID,
 		FailedStep:    uint8(req.CurrentStep),
 		FailedRequest: req,
 	}
@@ -1634,7 +1642,8 @@ func (s *Store) admitSegmentReservation(
 		return updateResponse(failedResponse)
 	}
 
-	if rsv != nil { // renewal, ensure index is not used
+	if rsv != nil {
+		// Ensure that the index is not used.
 		if rsv.Index(req.Index) != nil {
 			failedResponse.Message = fmt.Sprintf("index from setup already in use: %d", req.Index)
 			return updateResponse(failedResponse)
@@ -1645,9 +1654,8 @@ func (s *Store) admitSegmentReservation(
 		rsv.PathType = req.PathType
 		rsv.PathEndProps = req.PathProps
 		rsv.TrafficSplit = req.SplitCls
-		rsv.CurrentStep = req.CurrentStep
 		rsv.Steps = req.Steps
-		rsv.TransportPath = req.TransportPath
+		rsv.CurrentStep = req.CurrentStep
 	}
 
 	req.Reservation = rsv
@@ -1683,6 +1691,7 @@ func (s *Store) admitSegmentReservation(
 			Timestamp:      req.Timestamp,
 			Authenticators: make([][]byte, len(req.Authenticators)),
 		},
+		ID: &rsv.ID,
 	}
 	// if this is the last step, create a token from the new empty index
 	if req.CurrentStep == len(req.Steps)-1 {
@@ -1724,6 +1733,7 @@ func (s *Store) admitSegmentReservation(
 		failedResponse.Message = "storing token, cannot commit transaction: " + s.err(err).Error()
 		return updateResponse(failedResponse)
 	}
+	log.Debug("deleteme reservation saved in DB", "id", rsv.ID)
 
 	if req.CurrentStep != 0 {
 		err = s.authenticator.ComputeSegmentSetupResponseMAC(ctx, res, req.Steps, req.CurrentStep)
@@ -1784,9 +1794,32 @@ func (s *Store) sendUpstreamForAdmission(
 	}
 
 	if req.CurrentStep == 0 {
-		// this is the source of the traffic of the SegR, create the authenticators
-		err := s.authenticator.ComputeSegmentSetupRequestInitialMAC(ctx, req)
+		// This is the source of the traffic.
+		// Create new reservation in DB for down-path segments. For other types, it'll be created
+		// on the InitSegmentReservation method.
+		rsv, err := s.db.GetSegmentRsvFromID(ctx, &req.ID)
 		if err != nil {
+			return nil, serrors.WrapStr("cannot obtain segment reservation", err,
+				"id", req.ID.String())
+		}
+		if rsv == nil { // new setup
+			rsv = segment.NewReservation(req.ID.ASID)
+			rsv.ID = req.ID
+			rsv.PathType = req.PathType
+			rsv.PathEndProps = req.PathProps
+			rsv.TrafficSplit = req.SplitCls
+			rsv.Steps = req.Steps
+			rsv.CurrentStep = req.CurrentStep
+
+			if err := s.db.NewSegmentRsv(ctx, rsv); err != nil {
+				return nil, serrors.WrapStr("initial reservation creation", err,
+					"dst", rsv.Steps.DstIA())
+			}
+			req.ID = rsv.ID // the DB created a new suffix for the rsv.; copy it to the request
+			log.Debug("deleteme new segment in DB", "id", rsv.ID)
+		}
+
+		if err := s.authenticator.ComputeSegmentSetupRequestInitialMAC(ctx, req); err != nil {
 			return nil, err
 		}
 
@@ -1823,11 +1856,18 @@ func (s *Store) sendUpstreamForAdmission(
 	}
 
 	// at this point, the reservation has been accepted. Update the request link with it:
+	id := res.GetID()
+	if id == nil {
+		return nil, serrors.New("error retrieving the reservation ID from the admission",
+			"partial_id", req.ID)
+	}
+	req.ID = *id
 	req.Reservation, err = s.db.GetSegmentRsvFromID(ctx, &req.ID)
 	if err != nil {
 		log.Info("error reloading the admitted reservation", "err", err)
 		return nil, serrors.WrapStr("reloading the admitted reservation", err)
 	}
+	log.Debug("deleteme loaded reservation", "id", req.ID)
 
 	return res, nil
 }

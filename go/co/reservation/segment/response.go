@@ -24,6 +24,7 @@ import (
 type SegmentSetupResponse interface {
 	isSegmentSetupResponse_Success_Failure()
 
+	GetID() *reservation.ID
 	GetAuthenticators() [][]byte
 	SetAuthenticator(currentStep int, authenticator []byte)
 	GetTimestamp() time.Time
@@ -34,11 +35,16 @@ type SegmentSetupResponse interface {
 
 type SegmentSetupResponseSuccess struct {
 	base.AuthenticatedResponse
+	ID    *reservation.ID
 	Token reservation.Token
 }
 
 func (*SegmentSetupResponseSuccess) isSegmentSetupResponse_Success_Failure() {}
 func (*SegmentSetupResponseSuccess) Success() bool                           { return true }
+
+func (r *SegmentSetupResponseSuccess) GetID() *reservation.ID {
+	return r.ID
+}
 
 // ToRaw returns the raw representation for this response.
 // The step parameter indicates which step index along the path we want to serialize as.
@@ -72,6 +78,7 @@ func (r *SegmentSetupResponseSuccess) GetTimestamp() time.Time {
 
 type SegmentSetupResponseFailure struct {
 	base.AuthenticatedResponse
+	ID            *reservation.ID
 	FailedStep    uint8
 	FailedRequest *SetupReq
 	Message       string
@@ -79,6 +86,11 @@ type SegmentSetupResponseFailure struct {
 
 func (*SegmentSetupResponseFailure) isSegmentSetupResponse_Success_Failure() {}
 func (*SegmentSetupResponseFailure) Success() bool                           { return false }
+
+func (r *SegmentSetupResponseFailure) GetID() *reservation.ID {
+	return r.ID
+}
+
 func (r *SegmentSetupResponseFailure) ToRaw(step int) []byte {
 	buff := make([]byte, 1+4+r.FailedRequest.Len()+len(r.Message))
 	buff[0] = 1
@@ -88,9 +100,11 @@ func (r *SegmentSetupResponseFailure) ToRaw(step int) []byte {
 	copy(buff[offset:], []byte(r.Message))
 	return buff
 }
+
 func (r *SegmentSetupResponseFailure) ToRawAllHFs() []byte {
 	return r.ToRaw(1)
 }
+
 func (r *SegmentSetupResponseFailure) GetTimestamp() time.Time {
 	return r.Timestamp
 }

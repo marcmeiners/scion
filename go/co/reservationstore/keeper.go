@@ -101,7 +101,7 @@ func (e *entry) PrepareSetupRequest(now, expTime time.Time, localAS addr.AS,
 		currentStep = len(steps) - 1
 	}
 
-	id, _ := reservation.NewID(localAS, make([]byte, reservation.IDSuffixSegLen))
+	id, _ := reservation.NewID(steps.SrcIA().AS(), make([]byte, reservation.IDSuffixSegLen))
 	return &segment.SetupReq{
 		Request:        *base.NewRequest(now, id, 0, len(steps)),
 		ExpirationTime: expTime,

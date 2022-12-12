@@ -77,7 +77,9 @@ func PBufE2ESetupReq(req *e2e.SetupReq) (*colpb.E2ESetupRequest, error) {
 }
 
 func PBufSetupResponse(res segment.SegmentSetupResponse) *colpb.SegmentSetupResponse {
-	msg := &colpb.SegmentSetupResponse{}
+	msg := &colpb.SegmentSetupResponse{
+		Id: PBufID(res.GetID()),
+	}
 
 	switch r := res.(type) {
 	case *segment.SegmentSetupResponseSuccess:
