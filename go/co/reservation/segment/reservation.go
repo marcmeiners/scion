@@ -15,7 +15,6 @@
 package segment
 
 import (
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -58,32 +57,20 @@ func (r *Reservation) Egress() uint16 {
 	return r.Steps[r.CurrentStep].Egress
 }
 
-// DeriveColibriPathAtSource creates the ColibriPathMinimal from the active index in this
-// reservation. If there is no active index, the path is nil. This function is expected
-// to be called by the src of the reservation. Note that the src is not necesarely the
-// initator, in particular, if the Reservation is a downSegR.
-func (r *Reservation) DeriveColibriPathAtSource() *colpath.ColibriPathMinimal {
-	return r.deriveColibriPath(false)
-}
-
-// DeriveColibriPathAtDestination creates the ColibriPath using the values of the active index in
-// this reservation, but with the hop fields in the reverse order. If there is no active index it
-// returns nil. This function is expected to be called by the dst of the reservation, which will
-// be the initiator of the reservation if the if the Reservation is a downSegR.
-func (r *Reservation) DeriveColibriPathAtDestination() *colpath.ColibriPathMinimal {
-	// because the initiator AS is actually the DstAS, reverse the path
-	return r.deriveColibriPath(true)
-}
-
-func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinimal {
+// DeriveColibriPath creates the ColibriPathMinimal from the active index in this
+// reservation. If there is no active index, the path is nil.
+// This method returns the path in the direction of the traffic, meaning from src to dst.
+// Note that the src is not necessarily the initator, e.g. if the Reservation is a downSegR.
+func (r *Reservation) DeriveColibriPath() *colpath.ColibriPathMinimal {
 	index := r.ActiveIndex()
 	if index == nil {
 		return nil
 	}
 	p := &colpath.ColibriPath{
-		InfoField: r.deriveInfoField(reverse),
+		InfoField: r.deriveInfoField(),
 		HopFields: make([]*colpath.HopField, len(index.Token.HopFields)),
 	}
+
 	for i, hf := range index.Token.HopFields {
 		p.HopFields[i] = &colpath.HopField{
 			IngressId: hf.Ingress,
@@ -91,33 +78,13 @@ func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinima
 			Mac:       append([]byte{}, hf.Mac[:]...),
 		}
 	}
-	steps := r.Steps
-	if reverse {
-		steps = steps.Reverse()
-		if _, err := p.Reverse(); err != nil {
-			return nil
-		}
-	}
-	p.Src = caddr.NewEndpointWithAddr(steps.SrcIA(), addr.SvcCOL.Base())
-	p.Dst = caddr.NewEndpointWithAddr(steps.DstIA(), addr.SvcCOL.Base())
-	// deleteme
-	fmt.Printf("-------------------------------------------- %s (reversed?=%v)\n",
-		r.ID.String(), reverse)
-	fmt.Printf("Curr HF = %d, # Hop Fields = %d\n", p.InfoField.CurrHF, p.InfoField.HFCount)
-	for i, hf := range p.HopFields {
-		fmt.Printf("[%d] in:%d eg:%d MAC: %s\n", i, hf.IngressId, hf.EgressId, hex.EncodeToString(hf.Mac))
-	}
-	fmt.Println("--------------------------------------------")
-	// deleteme until here
+	p.Src = caddr.NewEndpointWithAddr(r.Steps.SrcIA(), addr.SvcCOL.Base())
+	p.Dst = caddr.NewEndpointWithAddr(r.Steps.DstIA(), addr.SvcCOL.Base())
+
 	min, err := p.ToMinimal()
 	if err != nil {
 		return nil
 	}
-	// deleteme:
-	buff := make([]byte, min.Len())
-	min.SerializeTo(buff)
-	fmt.Printf("%s -> %s\n", r.ID, min)
-	fmt.Printf("%s ->> %s\n", r.ID, hex.EncodeToString(buff))
 	return min
 }
 
@@ -338,27 +305,23 @@ func (r *Reservation) addIndex(index *Index) (reservation.IndexNumber, error) {
 	return index.Idx, nil
 }
 
+var zeroBytes = [colpath.LenSuffix - reservation.IDSuffixSegLen]byte{}
+
 // deriveInfoField returns a colibri info field filled with the values from this reservation.
 // It returns nil if there is no active index.
-func (r *Reservation) deriveInfoField(reverse bool) *colpath.InfoField {
+func (r *Reservation) deriveInfoField() *colpath.InfoField {
 	index := r.ActiveIndex()
 	if index == nil {
 		return nil
-	}
-	var zeroBytes = [colpath.LenSuffix - reservation.IDSuffixSegLen]byte{}
-	hfCount := uint8(len(index.Token.HopFields))
-	currHF := uint8(0)
-	if reverse {
-		// Always derive path at trip start. If going to be reversed, prepare to be the first hop.
-		currHF = hfCount - 1
 	}
 	return &colpath.InfoField{
 		C:       true,
 		S:       true,
 		R:       false,
 		Ver:     uint8(index.Idx),
-		HFCount: hfCount,
-		CurrHF:  currHF,
+		HFCount: uint8(len(index.Token.HopFields)),
+		CurrHF:  uint8(r.CurrentStep),
+
 		// the SegR ID and then 8 zeroes:
 		ResIdSuffix: append(append(zeroBytes[:0:0], r.ID.Suffix...), zeroBytes[:]...),
 		ExpTick:     uint32(index.Token.ExpirationTick),

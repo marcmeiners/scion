@@ -334,6 +334,9 @@ func (c *ColibriPathMinimal) ToColibriPath() (*ColibriPath, error) {
 }
 
 func (c *ColibriPathMinimal) Clone() *ColibriPathMinimal {
+	if c == nil {
+		return nil
+	}
 	return &ColibriPathMinimal{
 		PacketTimestamp: c.PacketTimestamp,
 		Raw:             append([]byte{}, c.Raw...),

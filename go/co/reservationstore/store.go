@@ -1177,11 +1177,11 @@ func (s *Store) AdmitE2EReservation(
 	switch {
 	case rsv.CurrentStep == 0:
 		// This AS is the source of the traffic and the initiator.
-		transport = rsv.SegmentReservations[0].DeriveColibriPathAtSource()
+		transport = rsv.SegmentReservations[0].TransportPath
 	case isStitchPoint:
 		// At stitch points we use the next segment.
 		req.CurrentSegmentRsvIndex++
-		transport = rsv.SegmentReservations[1].DeriveColibriPathAtSource()
+		transport = rsv.SegmentReservations[1].TransportPath
 	default:
 		// ASes that are not the initiator or stitch points need to check the dataplane path.
 		if err := rsv.Steps.ValidateEquivalent(transport, rsv.CurrentStep); err != nil {
@@ -1346,10 +1346,7 @@ func (s *Store) CleanupE2EReservation(
 		return failedResponse, nil
 	}
 
-	isTransfer := false
-	if len(rsv.SegmentReservations) > 1 {
-		isTransfer = true
-	}
+	isTransfer := rsv.IsStitchPoint(s.localIA)
 
 	tx, err := s.db.BeginTransaction(ctx, nil)
 	if err != nil {
@@ -1361,22 +1358,16 @@ func (s *Store) CleanupE2EReservation(
 	if err := rsv.Steps.ValidateEquivalent(transport, rsv.CurrentStep); err != nil {
 		return nil, err
 	}
-	// deleteme TODO(juagargi) review the need(less) of calling DeriveColibriPath here (and in other functions in Store)
-	if s.localIA.Equal(rsv.Steps.SrcIA()) || isTransfer {
-		if s.localIA.Equal(rsv.Steps.SrcIA()) {
-			r, err := tx.GetSegmentRsvFromID(ctx, &rsv.SegmentReservations[0].ID)
-			if err != nil {
-				return nil, err
-			}
-			transport = r.DeriveColibriPathAtSource()
-		} else {
-			r, err := tx.GetSegmentRsvFromID(ctx, &rsv.SegmentReservations[1].ID)
-			if err != nil {
-				return nil, err
-			}
-			transport = r.DeriveColibriPathAtSource()
-		}
+
+	switch {
+	case rsv.CurrentStep == 0:
+		// This AS is the source of the traffic and the initiator.
+		transport = rsv.SegmentReservations[0].TransportPath
+	case isTransfer:
+		// At stitch points we use the next segment.
+		transport = rsv.SegmentReservations[1].TransportPath
 	}
+	log.Debug("deleteme using transport", "transport", transport)
 
 	if rsv.Index(req.Index) != nil {
 		tx, err := s.db.BeginTransaction(ctx, nil)
@@ -2023,22 +2014,7 @@ func pathFromSegmentRsv(rsv *segment.Reservation) (*colpath.ColibriPathMinimal, 
 			"expiration", rsv.ActiveIndex().Expiration)
 	}
 
-	if rsv.CurrentStep != 0 {
-		// This must be the destination of a down-path segment.
-		assert(rsv.CurrentStep == len(rsv.Steps)-1, "path should be derived only at the source "+
-			"of the traffic (any case) or at the initiator (down-path), which must be the "+
-			"destination of the traffic. Details of the reservation: ID: %s, type: %s, "+
-			"current_step: %d, steps: %s",
-			rsv.ID, rsv.PathType, rsv.CurrentStep, rsv.Steps,
-		)
-		assert(rsv.PathType == reservation.DownPath, "path should be derived at the destination "+
-			"only for down-path segments. Details of the reservation: ID: %s, type: %s, "+
-			"current_step: %d, steps: %s",
-			rsv.ID, rsv.PathType, rsv.CurrentStep, rsv.Steps,
-		)
-		return rsv.DeriveColibriPathAtDestination(), nil
-	}
-	return rsv.DeriveColibriPathAtSource(), nil
+	return rsv.DeriveColibriPath(), nil
 }
 
 // assert performs an assertion on an invariant. An assertion is part of the documentation.

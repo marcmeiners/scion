@@ -31,7 +31,6 @@ import (
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
-	caddr "github.com/scionproto/scion/go/lib/slayers/path/colibri/addr"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
@@ -242,6 +241,14 @@ func (m *manager) GetReservationsAtSource(ctx context.Context) (
 // SetupRequest expects the steps to always go from src->dst, also for down-path. E.g.
 // a down-path SegR A<-B<-C is transported with a scion path A->B, but the steps are C,B,A .
 func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error {
+	if req.PathType == reservation.DownPath && req.CurrentStep == len(req.Steps)-1 {
+		var err error
+		req.TransportPath, err = req.TransportPath.Clone().ReverseAsColibri()
+		if err != nil {
+			return serrors.WrapStr("error reversing colibri path", err)
+		}
+	}
+
 	// setup/renew reservation (new temporary index in both cases)
 	err := m.store.InitSegmentReservation(ctx, req)
 	if err != nil {
@@ -253,14 +260,16 @@ func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error
 		return err
 	}
 	confirmReq := base.NewRequest(m.now(), &req.Reservation.ID, req.Index, len(req.Steps))
-	// because the store expects the steps[0] to always be the initiator (even for down-path
-	// SegRs), we need to reverse the steps and path if the SegR is of down-path type
+	// Because InitConfirmSegmentReservation expects steps[0] to always be the initiator
+	// (even for down-path SegRs), we need to reverse the steps and path iff the
+	// SegR is of down-path type.
 	steps := req.Steps
 	if req.PathType == reservation.DownPath {
 		steps = steps.Reverse()
 	}
-	transport := req.TransportPath
-	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, transport)
+	// Note that the request transport was already reversed if the initiator is the last AS of
+	// a down-path segment.
+	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, req.TransportPath)
 
 	if err != nil || !res.Success() {
 		origErr := err
@@ -282,14 +291,18 @@ func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error
 func (m *manager) ActivateRequest(ctx context.Context, req *base.Request, steps base.PathSteps,
 	transportPath *colpath.ColibriPathMinimal, reverseTraveling bool) error {
 
+	transport := transportPath.Clone()
 	if reverseTraveling {
 		steps = steps.Reverse()
+		if transport != nil {
+			var err error
+			transport, err = transport.ReverseAsColibri()
+			if err != nil {
+				return serrors.WrapStr("error reversing colibri path", err)
+			}
+		}
 	}
-	transport := transportPath
-	if transportPath != nil {
-		transport.Src = caddr.NewEndpointWithAddr(steps.SrcIA(), addr.SvcCOL.Base())
-		transport.Dst = caddr.NewEndpointWithAddr(steps.DstIA(), addr.SvcCOL.Base())
-	}
+
 	res, err := m.store.InitActivateSegmentReservation(ctx, req, steps, transport)
 	if err != nil {
 		return err

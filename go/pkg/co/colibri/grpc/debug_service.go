@@ -94,6 +94,7 @@ func (s *debugService) CmdTraceroute(ctx context.Context, req *colpb.CmdTracerou
 		req.DownDirection = true
 	}
 
+	// deleteme: all reservations must now contain a non nil colibri path in the direction of the traffic
 	if rsv.TransportPath != nil {
 		log.Debug("deleteme raw colibri path",
 			"transport", rsv.TransportPath,
@@ -292,6 +293,13 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		if initiator {
 			// retrieve the colibri transport path here (this AS is source or initiator)
 			transport = rsv.TransportPath
+			if walkInReverse {
+				transport, err = transport.ReverseAsColibri()
+				if err != nil {
+					return errF(status.Errorf(codes.Internal,
+						"error reversing colibri path: %s\nFor path: %s", err, transport))
+				}
+			}
 		} else {
 			transport, err = colAddrFromCtx(ctx)
 			if err != nil {
@@ -309,7 +317,7 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		}
 
 		// deleteme
-		log.Debug("debug service info about the colibri transport path", "", transport.String())
+		log.Debug("debug service info about the colibri transport path", "transport", transport)
 	}
 
 	egress := rsv.Egress()
