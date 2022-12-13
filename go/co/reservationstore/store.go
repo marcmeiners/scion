@@ -1239,10 +1239,7 @@ func (s *Store) AdmitE2EReservation(
 		if err := s.authenticator.ComputeE2ESetupRequestTransitMAC(ctx, req); err != nil {
 			return nil, serrors.WrapStr("computing in transit e2e setup request authenticator", err)
 		}
-		// deleteme BUG here using a segR to contact the next colSrv when stitch point;
-		// the bug is present also in E2E cleanup, maybe in some other segR RPC as well
-		// client, err := s.operator.ColibriClient(ctx, egress, transport)
-		client, err := s.operator.ColibriClient(ctx, egress, nil)
+		client, err := s.operator.ColibriClient(ctx, egress, transport)
 		if err != nil {
 			return nil, serrors.WrapStr("while finding a colibri service client", err)
 		}
