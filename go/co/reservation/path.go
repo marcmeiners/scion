@@ -64,6 +64,15 @@ func (p PathSteps) DstIA() addr.IA {
 	return p[len(p)-1].IA
 }
 
+func (p PathSteps) FirstIndexOf(ia addr.IA) int {
+	for i, s := range p {
+		if s.IA == ia {
+			return i
+		}
+	}
+	return -1
+}
+
 // Size returns PathSteps size in bytes
 func (p PathSteps) Size() int {
 	return 2 + len(p)*PathStepLen

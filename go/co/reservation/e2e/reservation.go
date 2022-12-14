@@ -64,6 +64,15 @@ func (r *Reservation) IsStitchPoint(ia addr.IA) bool {
 		r.SegmentReservations[1].Steps.SrcIA() == ia
 }
 
+func (r *Reservation) IsShortcut(ia addr.IA) bool {
+	if len(r.SegmentReservations) != 2 {
+		return false
+	}
+	return !r.IsStitchPoint(ia) &&
+		r.SegmentReservations[0].Steps.FirstIndexOf(ia) != -1 &&
+		r.SegmentReservations[1].Steps.FirstIndexOf(ia) != -1
+}
+
 func (r *Reservation) String() string {
 	if r == nil {
 		return "<nil>"
@@ -171,13 +180,6 @@ func (r *Reservation) AllocResv() uint64 {
 			r.Indices[len(r.Indices)-2].AllocBW)
 	}
 	return maxBW.ToKbps()
-}
-
-func (r *Reservation) DstIA() addr.IA {
-	if len(r.SegmentReservations) == 0 {
-		return 0
-	}
-	return r.SegmentReservations[len(r.SegmentReservations)-1].Steps.DstIA()
 }
 
 // GetLastSegmentPathSteps returns the path steps for the last segment in use by this e2e rsv.

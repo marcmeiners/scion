@@ -177,11 +177,16 @@ func (c *colibriPacketProcessor) forward() (processResult, error) {
 	egressId := c.colibriPathMinimal.CurrHopField.EgressId
 
 	_, deletemeCanForwardLocally := c.canForwardLocally(egressId)
+	deletemeExternals := make([]uint16, 0, len(c.d.external))
+	for k := range c.d.external {
+		deletemeExternals = append(deletemeExternals, k)
+	}
 
 	log.Debug("deleteme colibri packet will be forwarded", "path", c.colibriPathMinimal.String(),
 		"internal_ingress", c.ingressID,
 		"egress", egressId,
 		"canForwardLocally?", deletemeCanForwardLocally,
+		"externals", deletemeExternals,
 	)
 	if c.ingressID == 0 {
 		// Received packet from within AS

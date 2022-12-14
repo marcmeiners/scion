@@ -78,6 +78,21 @@ func (r *Reservation) DeriveColibriPath() *colpath.ColibriPathMinimal {
 			Mac:       append([]byte{}, hf.Mac[:]...),
 		}
 	}
+	// The path can be derived at any AS along the way. Because of that, it might be that a transit
+	// AS derives it without having all necessary hop fields from the token. We must complete the
+	// remaining hop fields with empty values to allow path manipulations such as reversing it.
+	// Those hop fields will naturally be invalid, but since we derive the path at AS A, all
+	// following ASes according to the direction of the traffic would have set their valid hop
+	// fields already, allowing transit from this AS A until the end of the path.
+	emptyHFs := make([]*colpath.HopField, int(p.InfoField.HFCount)-len(p.HopFields))
+	// TODO(juagargi) All this can be more efficient by having a slice of hop fields by value.
+	for i := 0; i < len(emptyHFs); i++ {
+		emptyHFs[i] = &colpath.HopField{
+			Mac: make([]byte, 4),
+		}
+	}
+	p.HopFields = append(emptyHFs, p.HopFields...)
+
 	p.Src = caddr.NewEndpointWithAddr(r.Steps.SrcIA(), addr.SvcCOL.Base())
 	p.Dst = caddr.NewEndpointWithAddr(r.Steps.DstIA(), addr.SvcCOL.Base())
 
@@ -319,7 +334,7 @@ func (r *Reservation) deriveInfoField() *colpath.InfoField {
 		S:       true,
 		R:       false,
 		Ver:     uint8(index.Idx),
-		HFCount: uint8(len(index.Token.HopFields)),
+		HFCount: uint8(len(r.Steps)),
 		CurrHF:  uint8(r.CurrentStep),
 
 		// the SegR ID and then 8 zeroes:
