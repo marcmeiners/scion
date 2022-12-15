@@ -202,11 +202,15 @@ func (t *renewalTask) Name() string {
 func (t *renewalTask) Run(ctx context.Context) {
 	t.reservation.request.Index = t.reservation.request.Index.Add(1)
 	for {
-		res, err := t.reservation.daemon.ColibriSetupRsv(ctx, t.reservation.request)
+		var res *colibri.E2EResponse
+		err := t.reservation.request.CreateAuthenticators(ctx, t.reservation.daemon)
 		if err == nil {
-			t.reservation.colibriPath = res.ColibriPath
-			t.reservation.onSuccess(t.reservation)
-			return
+			res, err = t.reservation.daemon.ColibriSetupRsv(ctx, t.reservation.request)
+			if err == nil {
+				t.reservation.colibriPath = res.ColibriPath
+				t.reservation.onSuccess(t.reservation)
+				return
+			}
 		}
 		trip := t.reservation.onError(t.reservation, err)
 		if trip == nil {

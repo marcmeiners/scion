@@ -1273,6 +1273,7 @@ func (s *Store) AdmitE2EReservation(
 		success, ok := downstreamRes.(*e2e.SetupResponseSuccess)
 		if !ok {
 			// not admitted
+			log.Debug("EER not admitted", "eer", rsv)
 			return downstreamRes, nil
 		}
 		token, err = reservation.TokenFromRaw(success.Token)
@@ -1281,6 +1282,7 @@ func (s *Store) AdmitE2EReservation(
 			return failedResponse, nil
 		}
 		res.Authenticators = success.Authenticators
+		log.Debug("EER success admission", "eer", rsv)
 	}
 	// here the request was admitted and returning back from the down stream admission
 

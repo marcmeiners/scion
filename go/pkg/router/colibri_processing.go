@@ -18,7 +18,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/google/gopacket"
 
@@ -142,14 +141,16 @@ func (c *colibriPacketProcessor) basicValidation() (processResult, error) {
 		return processResult{}, serrors.New("packet expired")
 	}
 
+	// deleteme
+	// TODO(juagargi) Uncomment this once the dispatcher can find the correct local IA without hacks.
 	// Packet freshness
-	if !C {
-		timestamp := c.colibriPathMinimal.PacketTimestamp
-		isFresh := libcolibri.VerifyTimestamp(expTick, timestamp, time.Now())
-		if !isFresh {
-			return processResult{}, serrors.New("verification of packet timestamp failed")
-		}
-	}
+	// if !C {
+	// 	timestamp := c.colibriPathMinimal.PacketTimestamp
+	// 	isFresh := libcolibri.VerifyTimestamp(expTick, timestamp, time.Now())
+	// 	if !isFresh {
+	// 		return processResult{}, serrors.New("verification of packet timestamp failed")
+	// 	}
+	// }
 
 	// Check if destined to local AS: egress is 0, dst is local, no more hosts must be equal
 	isLocal := c.colibriPathMinimal.CurrHopField.EgressId == 0

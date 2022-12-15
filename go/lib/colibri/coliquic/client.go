@@ -187,7 +187,10 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 		}
 		nh := o.nextHops[egressID]
 		rAddr.NextHop = &nh
-		log.Debug("deleteme next hop for egress at client", "egress", egressID, "next_hop", rAddr.NextHop)
+		log.Debug("deleteme next hop for colibri at egress",
+			"egress", egressID,
+			"next_hop", rAddr.NextHop,
+		)
 	default:
 		// nothing but colibri or nil is accepted
 		return nil, serrors.New("error in client operator: not a valid transport",
@@ -199,7 +202,6 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 func (o *ServiceClientOperator) colibriClient(ctx context.Context, rAddr *snet.UDPAddr) (
 	colpb.ColibriServiceClient, error) {
 
-	log.Debug("deleteme about to dial at the operator")
 	conn, err := o.gRPCDialer.Dial(ctx, rAddr)
 	if err != nil {
 		log.Info("error dialing a grpc connection", "addr", rAddr, "err", err)
