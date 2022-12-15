@@ -667,7 +667,11 @@ func (s *Store) ActivateSegmentReservation(
 		return failedResponse, nil
 	}
 
-	log.Debug("deleteme storing reservation", "path", rsv.TransportPath)
+	log.Debug("deleteme storing reservation",
+		"ID", rsv.ID,
+		"steps", rsv.Steps,
+		"path", rsv.TransportPath,
+	)
 	if err = tx.PersistSegmentRsv(ctx, rsv); err != nil {
 		return failedResponse, s.errWrapStr("cannot persist segment reservation", err,
 			"id", req.ID.String())
@@ -1728,7 +1732,7 @@ func (s *Store) admitSegmentReservation(
 		failedResponse.Message = "storing token, cannot commit transaction: " + s.err(err).Error()
 		return updateResponse(failedResponse)
 	}
-	log.Debug("deleteme reservation saved in DB", "id", rsv.ID)
+	log.Debug("deleteme reservation saved in DB", "id", rsv.ID, "steps", rsv.Steps)
 
 	if req.CurrentStep != 0 {
 		err = s.authenticator.ComputeSegmentSetupResponseMAC(ctx, res, req.Steps, req.CurrentStep)

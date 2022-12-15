@@ -56,6 +56,7 @@ type ServiceClientOperator struct {
 	gRPCDialer           grpc.Dialer
 	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per egress interface ID
 	neighboringColSvcsMu sync.Mutex
+	nextHops             map[uint16]net.UDPAddr
 	neighboringIAs       map[uint16]addr.IA
 	srvResolver          ColSrvResolver
 	colServices          map[addr.IA]*snet.UDPAddr // cached discovered addresses
@@ -84,6 +85,7 @@ func NewServiceClientOperator(topo TopoLoader, pconn net.PacketConn, router snet
 	operator := &ServiceClientOperator{
 		gRPCDialer:         gRPCDialer, // persistent dialer
 		neighboringColSvcs: make(map[uint16]*snet.UDPAddr, len(topo.InterfaceIDs())),
+		nextHops:           make(map[uint16]net.UDPAddr, len(topo.InterfaceIDs())),
 		srvResolver: &DiscoveryColSrvRes{
 			Router:     router,
 			GRPCDialer: gRPCDialer, // persistent dialer
@@ -162,7 +164,7 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 	transport *colpath.ColibriPathMinimal,
 ) (*snet.UDPAddr, error) {
 
-	rAddr, ok := o.neighborAddr(egressID)
+	rAddr, ok := o.neighborSvcCOL(egressID)
 	if !ok {
 		return nil, serrors.New("client operator not yet initialized for this egress ID",
 			"egress_id", egressID, "neighbor_count", len(o.neighboringColSvcs))
@@ -183,6 +185,9 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 		rAddr.Path = snetpath.Colibri{
 			ColibriPathMinimal: *transport,
 		}
+		nh := o.nextHops[egressID]
+		rAddr.NextHop = &nh
+		log.Debug("deleteme next hop for egress at client", "egress", egressID, "next_hop", rAddr.NextHop)
 	default:
 		// nothing but colibri or nil is accepted
 		return nil, serrors.New("error in client operator: not a valid transport",
@@ -214,7 +219,7 @@ func (o *ServiceClientOperator) debugClient(ctx context.Context, rAddr *snet.UDP
 	return colpb.NewColibriDebugServiceClient(conn), nil
 }
 
-func (o *ServiceClientOperator) neighborAddr(egressID uint16) (*snet.UDPAddr, bool) {
+func (o *ServiceClientOperator) neighborSvcCOL(egressID uint16) (*snet.UDPAddr, bool) {
 	o.neighboringColSvcsMu.Lock()
 	defer o.neighboringColSvcsMu.Unlock()
 
@@ -224,6 +229,7 @@ func (o *ServiceClientOperator) neighborAddr(egressID uint16) (*snet.UDPAddr, bo
 
 // initialize waits in the background until this operator can obtain paths to all the remaining IAs.
 func (o *ServiceClientOperator) initialize(topo TopoLoader) {
+	o.nextHops = nextHops(topo) // the border routers for those egress IDs.
 	o.neighboringIAs = neighbors(topo)
 	o.neighboringIAs[0] = topo.IA() // interface with ID 0 is ourselves
 	// a new local copy to find their addresses and keep track of the remaining neighbors
@@ -235,7 +241,7 @@ func (o *ServiceClientOperator) initialize(topo TopoLoader) {
 		for len(remainingIAs) > 0 {
 			log.Debug("colibri client operator initializing", "remaining", len(remainingIAs))
 			newNeighbors := make(map[uint16]*snet.UDPAddr)
-			remainingIAs = o.findNeighbors(newNeighbors, remainingIAs)
+			remainingIAs = o.findNeighborsSvcCOL(newNeighbors, remainingIAs)
 			if len(newNeighbors) > 0 {
 				o.neighboringColSvcsMu.Lock()
 				for egressID, addr := range newNeighbors {
@@ -273,7 +279,7 @@ func (o *ServiceClientOperator) periodicResolveNeighbors(topo TopoLoader) {
 		}
 		for iter := 0; len(remainingIAs) > 0 && iter < 30; iter++ {
 			time.Sleep(2 * time.Second)
-			remainingIAs = o.findNeighbors(newAddrBook, neighbors)
+			remainingIAs = o.findNeighborsSvcCOL(newAddrBook, neighbors)
 			log.Debug("periodic resolve neighbors",
 				"total", len(neighbors), "missing", len(remainingIAs))
 		}
@@ -334,14 +340,22 @@ func neighbors(topo TopoLoader) map[uint16]addr.IA {
 	return neighbors
 }
 
-// findNeighbors sets the address of the neighbors in the addrBook parameter.
+func nextHops(topo TopoLoader) map[uint16]net.UDPAddr {
+	nextHops := make(map[uint16]net.UDPAddr)
+	for ifid, info := range topo.InterfaceInfoMap() {
+		nextHops[uint16(ifid)] = *info.InternalAddr
+	}
+	return nextHops
+}
+
+// findNeighborsSvcCOL sets the address of the neighbors in the addrBook parameter.
 // Returns the neighbors for which it could not find an address.
-func (o *ServiceClientOperator) findNeighbors(addrBook map[uint16]*snet.UDPAddr,
+func (o *ServiceClientOperator) findNeighborsSvcCOL(addrBook map[uint16]*snet.UDPAddr,
 	neighbors map[uint16]addr.IA) map[uint16]addr.IA {
 
 	missingNeighbors := make(map[uint16]addr.IA)
 	for egress, ia := range neighbors {
-		colAddr, err := o.resolveAddr(&ia)
+		colAddr, err := o.resolveSvcCOLAddr(&ia)
 		if err != nil {
 			log.Debug("error resolving address for colibri service", "err", err)
 			missingNeighbors[egress] = ia
@@ -352,7 +366,7 @@ func (o *ServiceClientOperator) findNeighbors(addrBook map[uint16]*snet.UDPAddr,
 	return missingNeighbors
 }
 
-func (o *ServiceClientOperator) resolveAddr(ia *addr.IA) (*snet.UDPAddr, error) {
+func (o *ServiceClientOperator) resolveSvcCOLAddr(ia *addr.IA) (*snet.UDPAddr, error) {
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelCtx()
 	return o.srvResolver.ResolveColibriService(ctx, ia)

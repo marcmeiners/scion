@@ -16,6 +16,7 @@ package colibri
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
@@ -78,9 +79,19 @@ func (c *ColibriPathMinimal) String() string {
 		Suffix: c.InfoField.ResIdSuffix,
 	}
 
+	// deleteme:
+	cc, err := c.ToColibriPath()
+	if err != nil {
+		panic(err)
+	}
+	pairs := make([]string, len(cc.HopFields))
+	for i, hf := range cc.HopFields {
+		pairs[i] = fmt.Sprintf("(%d,%d)", hf.IngressId, hf.EgressId)
+	}
+
 	inf := c.InfoField
-	return fmt.Sprintf("%s -> %s [ID: %s,Idx: %d] (#HFs:%d,CurrHF:%d,S:%v C:%v R:%v)",
-		c.Src, c.Dst, ID, inf.Ver, inf.HFCount, inf.CurrHF, inf.S, inf.C, inf.R)
+	return fmt.Sprintf("%s -> %s [ID: %s,Idx: %d] (#HFs:%d,CurrHF:%d,S:%v C:%v R:%v) Hop Fields: %s",
+		c.Src, c.Dst, ID, inf.Ver, inf.HFCount, inf.CurrHF, inf.S, inf.C, inf.R, strings.Join(pairs, " -> "))
 }
 
 func (c *ColibriPathMinimal) GetInfoField() *InfoField {
