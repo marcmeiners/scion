@@ -55,7 +55,7 @@ const outputBatchCnt = 2
 // WriteTo() function.
 type Queues struct {
 	mapping     map[TrafficClass]*ZeroAllocQueue
-	nonempty    chan bool
+	nonempty    chan struct{}
 	scheduler   Scheduler
 	writeBuffer conn.Messages
 }
@@ -68,7 +68,7 @@ type Scheduler interface {
 // traffic class, otherwise only one large queue for 'ClsOthers' will be created.
 func NewQueues(scheduling bool, maxPacketLength int) *Queues {
 	qs := &Queues{}
-	qs.nonempty = make(chan bool, 1)
+	qs.nonempty = make(chan struct{}, 1)
 	qs.mapping = make(map[TrafficClass]*ZeroAllocQueue)
 
 	qs.mapping[ClsOthers] = newZeroAllocQueue(128, maxPacketLength)
@@ -114,7 +114,7 @@ func (qs *Queues) Enqueue(tc TrafficClass, m []byte, outAddr *net.UDPAddr) error
 // setToNonempty signals to the scheduler that new messages are ready to be scheduled.
 func (qs *Queues) setToNonempty() {
 	select {
-	case qs.nonempty <- true:
+	case qs.nonempty <- struct{}{}:
 	default:
 	}
 }
@@ -186,7 +186,7 @@ func newZeroAllocQueue(queueSize, maxPacketLength int) *ZeroAllocQueue {
 	for _, msg := range msgs {
 		msg.Buffers[0] = make([]byte, maxPacketLength)
 		msg.Addr = &net.UDPAddr{
-			IP: make([]byte, 16),
+			IP: make(net.IP, 16),
 		}
 		q.emptyPackets <- msg
 	}
@@ -232,7 +232,7 @@ L:
 		case m := <-q.filledPackets:
 			ms[counter] = m
 		default:
-			break L
+			break L // this breaks out of the loop (not above it, but after)
 		}
 	}
 
