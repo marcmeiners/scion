@@ -600,7 +600,7 @@ func (x *executor) CheckAdmissionList(ctx context.Context, now time.Time,
 }
 
 func (x *executor) DeleteExpiredAdmissionEntries(ctx context.Context, now time.Time) (int, error) {
-	const query = `DELETE FROM e2e_admission_list WHERE valid_until > ?`
+	const query = `DELETE FROM e2e_admission_list WHERE valid_until < ?`
 	res, err := x.db.ExecContext(ctx, query, util.TimeToSecs(now))
 	if err != nil {
 		return 0, err
