@@ -3,6 +3,7 @@ load("//lint:go.bzl", "go_library", "go_test")
 go_library(
     name = "go_default_library",
     srcs = [
+        "forwarder.go",
         "processing.go",
         "processor.go",
     ],
@@ -47,10 +48,12 @@ go_test(
         "//go/coligate/storage:go_default_library",
         "//go/lib/addr:go_default_library",
         "//go/lib/colibri/dataplane:go_default_library",
+        "//go/lib/log:go_default_library",
         "//go/lib/slayers:go_default_library",
         "//go/lib/slayers/path/colibri:go_default_library",
         "//go/pkg/coligate:go_default_library",
         "//go/pkg/coligate/config:go_default_library",
+        "@com_github_google_gopacket//:go_default_library",
         "@com_github_stretchr_testify//assert:go_default_library",
         "@org_golang_x_net//ipv4:go_default_library",
         "@org_golang_x_sync//errgroup:go_default_library",

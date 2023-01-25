@@ -19,7 +19,6 @@ import (
 
 	"github.com/scionproto/scion/go/coligate/storage"
 	libaddr "github.com/scionproto/scion/go/lib/addr"
-	libtypes "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
 	libmetrics "github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/util"
@@ -31,7 +30,7 @@ type Coligate struct {
 	ReservationChannels          []chan *storage.UpdateTask
 	CleanupChannel               chan *storage.UpdateTask
 	UpdateSigmasTotalPromCounter libmetrics.Counter
-	FindWorker                   func([]byte) uint32
+	FindWorker                   func([12]byte) uint32
 }
 
 var _ cgpb.ColibriGatewayServiceServer = (*Coligate)(nil)
@@ -40,15 +39,13 @@ func (s *Coligate) UpdateSigmas(ctx context.Context, msg *cgpb.UpdateSigmasReque
 	*cgpb.UpdateSigmasResponse, error) {
 
 	log.Debug("Call to UpdateSigmas")
-	id, err := libtypes.NewID(s.LocalIA.AS(), msg.Suffix)
-	if err != nil {
-		return nil, err
-	}
-	resId := string(id.ToRaw())
+	newId := [12]byte{}
+	copy(newId[:], msg.Suffix)
+
 	s.UpdateSigmasTotalPromCounter.Add(1)
 	task := &storage.UpdateTask{
 		Reservation: &storage.Reservation{
-			Id:  resId,
+			Id:  newId,
 			Rlc: uint8(msg.Rlc),
 			Indices: map[uint8]*storage.ReservationIndex{
 				uint8(msg.Index): {
@@ -69,7 +66,7 @@ func (s *Coligate) UpdateSigmas(ctx context.Context, msg *cgpb.UpdateSigmasReque
 	}
 	s.CleanupChannel <- task
 
-	s.ReservationChannels[s.FindWorker(id.ToRaw())] <- task
+	s.ReservationChannels[s.FindWorker(newId)] <- task
 
 	return &cgpb.UpdateSigmasResponse{}, nil
 }

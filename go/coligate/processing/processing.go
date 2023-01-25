@@ -15,9 +15,9 @@
 package processing
 
 import (
+	"crypto/cipher"
+	"encoding/binary"
 	"time"
-
-	"github.com/google/gopacket"
 
 	"github.com/scionproto/scion/go/coligate/storage"
 	"github.com/scionproto/scion/go/coligate/tokenbucket"
@@ -31,11 +31,14 @@ import (
 )
 
 type Worker struct {
+	Id             uint32
 	CoreIdCounter  uint32
 	NumCounterBits int
 
-	Storage *storage.Storage
-	LocalAS libaddr.AS
+	Storage         *storage.Storage
+	forwardChannels map[uint16]*packetForwarderContainer
+	LocalAS         libaddr.AS
+	metrics         *ColigateMetrics
 }
 
 type dataPacket struct {
@@ -44,44 +47,74 @@ type dataPacket struct {
 	colibriPath    *colibri.ColibriPath
 	reservation    *storage.Reservation
 	rawPacket      []byte
+	id             [12]byte
 }
 
-// Parse parses the scion and colibri header from a raw packet
-// TODO(rohrerj) This parses the path twice, optimize
+// Parse parses only the bare minimum that is required to extract the reservation id
 func Parse(rawPacket []byte) (*dataPacket, error) {
-	proc := dataPacket{
-		rawPacket:  make([]byte, len(rawPacket)),
-		scionLayer: &slayers.SCION{},
+	if len(rawPacket) < 76 {
+		return nil, serrors.New("raw packet length too small")
 	}
-	copy(proc.rawPacket, rawPacket)
-	var err error
-	if err := proc.scionLayer.DecodeFromBytes(proc.rawPacket,
-		gopacket.NilDecodeFeedback); err != nil {
-		return nil, err
+	addrLenByte := rawPacket[9]
+	dstAddrLen := addrLenByte >> 4 & 0x3
+	srcAddrLen := addrLenByte & 0x3
+	dataPacket := dataPacket{
+		rawPacket: rawPacket,
 	}
-	var ok bool
-	p, ok := proc.scionLayer.Path.(*colibri.ColibriPathMinimal)
-	if !ok {
-		return nil, serrors.New("getting colibri minimal path failed")
+	offsetToColibriHeader := slayers.CmnHdrLen + 2*libaddr.IABytes +
+		(int(dstAddrLen)+1)*4 + (int(srcAddrLen)+1)*4
+	if len(rawPacket) < offsetToColibriHeader+40 {
+		return nil, serrors.New("raw packet length too small")
 	}
-	if proc.colibriPath, err = p.ToColibriPath(); err != nil {
-		return nil, serrors.New("expanding colibri path failed")
-	}
-	return &proc, nil
+	copy(dataPacket.id[:12], rawPacket[offsetToColibriHeader+12:])
+	return &dataPacket, nil
 }
 
 // NewWorker initializes the worker with its id, tokenbuckets and reservations
 func NewWorker(config *config.ColigateConfig, workerId uint32, gatewayId uint32,
-	localAS libaddr.AS) *Worker {
+	localAS libaddr.AS, forwardChannels map[uint16]*packetForwarderContainer,
+	metrics *ColigateMetrics) *Worker {
 	w := &Worker{
+		Id: workerId,
 		CoreIdCounter: (gatewayId << (32 - config.NumBitsForGatewayId)) |
 			(workerId << (32 - config.NumBitsForGatewayId - config.NumBitsForWorkerId)),
-		NumCounterBits: config.NumBitsForPerWorkerCounter,
-		LocalAS:        localAS,
-		Storage:        &storage.Storage{},
+		NumCounterBits:  config.NumBitsForPerWorkerCounter,
+		LocalAS:         localAS,
+		Storage:         &storage.Storage{},
+		forwardChannels: forwardChannels,
+		metrics:         metrics,
 	}
 	w.Storage.InitStorageWithData(nil)
+
 	return w
+}
+
+// Parses the some fields of the scion header that are needed by colibri gateway
+// and the full colibri header
+func (w *Worker) realParse(d *dataPacket) error {
+	payloadLen := binary.BigEndian.Uint16(d.rawPacket[6:8])
+	realPayloadLen := len(d.rawPacket) - int(d.rawPacket[5])*4
+	if payloadLen != uint16(realPayloadLen) {
+		return serrors.New("payload length field does not match actual packet payload length",
+			"payloadLen", payloadLen, "realPayloadLen", realPayloadLen)
+	}
+	addrLenByte := d.rawPacket[9]
+	dstAddrLen := addrLenByte >> 4 & 0x3
+	srcAddrLen := addrLenByte & 0x3
+	d.scionLayer = &slayers.SCION{
+		DstAddrLen: slayers.AddrLen(dstAddrLen),
+		SrcAddrLen: slayers.AddrLen(srcAddrLen),
+		SrcIA: libaddr.IA(binary.BigEndian.Uint64(
+			d.rawPacket[slayers.CmnHdrLen+libaddr.IABytes:])),
+	}
+	d.colibriPath = &colibri.ColibriPath{}
+	offset := slayers.CmnHdrLen + 2*libaddr.IABytes + (int(dstAddrLen)+1)*4 + (int(srcAddrLen)+1)*4
+	err := d.colibriPath.DecodeFromBytes(d.rawPacket[offset:])
+	if err != nil {
+		return err
+	}
+	d.pktArrivalTime = time.Now()
+	return nil
 }
 
 // Processes the current packet based on the current dataPacket
@@ -89,21 +122,19 @@ func (w *Worker) process(d *dataPacket) error {
 	if w == nil {
 		return serrors.New("worker must not be nil")
 	}
-
 	if d == nil {
 		return serrors.New("datapacket must not be nil")
 	}
-	var err error
-	err = w.validate(d)
-	if err != nil {
+	if err := w.validate(d); err != nil {
 		return err
 	}
-	err = w.performTrafficMonitoring(d)
-	if err != nil {
+	if err := w.performTrafficMonitoring(d); err != nil {
 		return err
 	}
-
-	return w.stamp(d)
+	if err := w.stamp(d); err != nil {
+		return err
+	}
+	return w.forwardPacket(d)
 }
 
 // Validates the fields in the colibri header and checks that a valid reservation exists
@@ -112,21 +143,15 @@ func (w *Worker) validate(d *dataPacket) error {
 	C := infoField.C
 	R := infoField.R
 	S := infoField.S
-	resIDSuffix := infoField.ResIdSuffix
 	if C || R || S {
 		return serrors.New("Invalid flags", "S", S, "R", R, "C", C)
 	}
-	// TODO(rohrerj) change mapping of reservation id
-	id, err := libtypes.NewID((d).scionLayer.SrcIA.AS(), resIDSuffix)
-	if err != nil {
-		return serrors.New("Cannot parse reservation id")
+	if d.scionLayer.SrcIA.AS() != w.LocalAS {
+		return serrors.New("Reservation does not belong to local AS", "expected",
+			w.LocalAS, "actual", d.scionLayer.SrcIA.AS())
 	}
-	if id.ASID != w.LocalAS {
-		return serrors.New("Reservation does not belong to local AS")
-	}
-	resID := string(id.ToRaw())
 
-	reservation, isValid := w.Storage.UseReservation(resID, infoField.Ver, d.pktArrivalTime)
+	reservation, isValid := w.Storage.UseReservation(d.id, infoField.Ver, d.pktArrivalTime)
 	if !isValid {
 		return serrors.New("E2E reservation is invalid")
 	}
@@ -141,11 +166,19 @@ func (w *Worker) validate(d *dataPacket) error {
 func (w *Worker) validateFields(d *dataPacket) error {
 	infoField := d.colibriPath.InfoField
 	currentIndex := d.reservation.Current()
-
-	if len(d.colibriPath.HopFields) != len(currentIndex.Sigmas) {
-		return serrors.New("Number of hopfields is invalid", "expected",
-			len(currentIndex.Sigmas), "actual", len(d.colibriPath.HopFields))
+	lenHopFields := len(d.colibriPath.HopFields)
+	if currentIndex.Ciphers != nil {
+		if lenHopFields != len(currentIndex.Ciphers) {
+			return serrors.New("Number of hopfields is invalid", "expected",
+				len(currentIndex.Ciphers), "actual", lenHopFields)
+		}
+	} else {
+		if lenHopFields != len(currentIndex.Sigmas) {
+			return serrors.New("Number of hopfields is invalid", "expected",
+				len(currentIndex.Sigmas), "actual", lenHopFields)
+		}
 	}
+
 	if infoField.CurrHF != 0 {
 		return serrors.New("CurrHF is invalid", "expected", 0, "actual", infoField.CurrHF)
 	}
@@ -208,6 +241,22 @@ func (w *Worker) updateCounter() {
 	w.CoreIdCounter = w.CoreIdCounter&b + a&(w.CoreIdCounter+1)
 }
 
+// initializeCiphers initializes all the ciphers, stores them in the reservation and
+// deletes the sigmas
+func (w *Worker) initializeCiphers(d *dataPacket, currentIndex *storage.ReservationIndex) error {
+	currentIndex.Ciphers = make([]cipher.Block, len(currentIndex.Sigmas))
+	for i := 0; i < len(currentIndex.Ciphers); i++ {
+		cipher, err := libcolibri.InitColibriKey(currentIndex.Sigmas[i])
+		if err != nil {
+			currentIndex.Ciphers = nil
+			return err
+		}
+		currentIndex.Ciphers[i] = cipher
+	}
+	currentIndex.Sigmas = nil
+	return nil
+}
+
 // Updates the timestamp and HFVs
 func (w *Worker) stamp(d *dataPacket) error {
 	currentIndex := d.reservation.Current()
@@ -218,16 +267,29 @@ func (w *Worker) stamp(d *dataPacket) error {
 	w.updateCounter()
 
 	d.colibriPath.PacketTimestamp = libcolibri.CreateColibriTimestampCustom(tsRel, w.CoreIdCounter)
-	// Set HVF values
-	for i, sigma := range currentIndex.Sigmas {
-		cipher, err := libcolibri.InitColibriKey(sigma)
-		if err != nil {
+	// Pre-initialize and store all ciphers if they are not initialized already
+	if currentIndex.Ciphers == nil {
+		if err := w.initializeCiphers(d, currentIndex); err != nil {
 			return err
 		}
+	}
+	// Set HVF values
+	for i, cipher := range currentIndex.Ciphers {
 		if err = libcolibri.MACE2EFromSigma(d.colibriPath.HopFields[i].Mac, cipher,
 			d.colibriPath.InfoField, d.colibriPath.PacketTimestamp, d.scionLayer); err != nil {
 			return err
 		}
 	}
 	return d.colibriPath.SerializeTo(d.rawPacket[slayers.CmnHdrLen+d.scionLayer.AddrHdrLen():])
+}
+
+func (w *Worker) forwardPacket(d *dataPacket) error {
+	egressId := d.colibriPath.GetCurrentHopField().EgressId
+	forwarderContainer, found := w.forwardChannels[egressId]
+	if !found {
+		return serrors.New("Forward Channel for egress id not found", "egressId", egressId)
+	}
+	index := w.Id % uint32(forwarderContainer.ForwarderCount)
+	forwarderContainer.Forwarders[index].ForwardChannel <- d.rawPacket
+	return nil
 }

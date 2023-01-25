@@ -27,7 +27,6 @@ import (
 
 	"github.com/scionproto/scion/go/coligate/storage"
 	libaddr "github.com/scionproto/scion/go/lib/addr"
-	libtypes "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
 	libmetrics "github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -42,26 +41,28 @@ import (
 	cgpb "github.com/scionproto/scion/go/pkg/proto/coligate"
 )
 
-// TODO(rohrerj) Add Unit tests
-
 type Processor struct {
-	localIA                 libaddr.IA
-	dataChannels            []chan *dataPacket
-	controlUpdateChannels   []chan *storage.UpdateTask
-	controlDeletionChannels []chan *storage.DeletionTask
-	cleanupChannel          chan *storage.UpdateTask
-	borderRouters           map[uint16]*ipv4.PacketConn
-	saltHasher              common.SaltHasher
-	exit                    bool
-	metrics                 *ColigateMetrics
-	numWorkers              int
+	localIA                   libaddr.IA
+	dataChannels              []chan *dataPacket
+	controlUpdateChannels     []chan *storage.UpdateTask
+	controlDeletionChannels   []chan *storage.DeletionTask
+	cleanupChannel            chan *storage.UpdateTask
+	packetForwarderContainers map[uint16]*packetForwarderContainer
+	saltHasher                common.SaltHasher
+	exit                      bool
+	metrics                   *ColigateMetrics
+	numWorkers                int
 }
 
 // BufSize is the maximum size of a datapacket including all the headers.
 const bufSize int = 9000
 
-// NumOfMessages is the maximum number of messages that are read as a batch from the socket.
-const numOfMessages int = 10 // TODO(rohrerj) check msg size
+// NumMessages is the maximum number of messages that are read as a batch from the socket.
+const numMessages int = 32
+
+// ReceiverChannelSize is the size of the channel where the receiver writes its received
+// packets and from where the parser reads them
+const receiverChannelSize int = 256
 
 func (c *Processor) shutdown() {
 	if c.exit {
@@ -78,24 +79,67 @@ func (c *Processor) shutdown() {
 	for i := 0; i < len(c.controlDeletionChannels); i++ {
 		c.controlDeletionChannels[i] <- nil
 	}
+	for _, v := range c.packetForwarderContainers {
+		for _, f := range v.Forwarders {
+			f.ForwardChannel <- nil
+		}
+	}
 }
 
 // Init initializes the colibri gateway. Configures the channels, goroutines,
 // and the control plane and the data plane.
 func Init(ctx context.Context, cfg *config.Config, cleanup *app.Cleanup,
 	g *errgroup.Group, topo *topology.Loader, metrics *common.Metrics) error {
-
-	config := &cfg.Coligate
-	var borderRouters map[uint16]*ipv4.PacketConn = make(map[uint16]*ipv4.PacketConn)
-	for ifid, info := range topo.InterfaceInfoMap() {
-		conn, _ := net.DialUDP("udp", nil, info.InternalAddr)
-		borderRouters[uint16(ifid)] = ipv4.NewPacketConn(conn)
-		log.Debug("Found Border Router", "ifid", ifid, "internal_addr", info.InternalAddr)
-	}
-
 	coligateInfo, err := topo.ColibriGateway(cfg.General.ID)
 	if err != nil {
 		return err
+	}
+
+	coligateConfig := &cfg.Coligate
+	coligateMetrics := initializeMetrics(metrics)
+	forwarderContainers := make(map[uint16]*packetForwarderContainer)
+	for ifid, info := range topo.InterfaceInfoMap() {
+		found := false
+		// We skip all interface ids that are not used by this instance of Colibri Gateway
+		for _, eggr := range coligateInfo.Egresses {
+			if eggr == uint32(ifid) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		// If a configuration for that interface exists use it otherwise use default values
+		found = false
+		var forwarderConfig config.ForwarderConfig
+		for _, fw := range coligateConfig.Forwarder {
+			if uint32(fw.InterfaceId) == uint32(ifid) {
+				found = true
+				forwarderConfig = fw
+				break
+			}
+		}
+		if !found {
+			forwarderConfig = config.ForwarderConfig{
+				InterfaceId: int(ifid),
+				BatchSize:   16,
+				Count:       1,
+			}
+		}
+		container := NewPacketForwarderContainer(info.InternalAddr, forwarderConfig.BatchSize,
+			coligateMetrics, uint32(forwarderConfig.Count))
+		for i := 0; i < forwarderConfig.Count; i++ {
+			pf := container.NewPacketForwarder()
+			func(pf *packetForwarder) {
+				g.Go(func() error {
+					defer log.HandlePanic()
+					log.Debug("Started Packet forwarder", "addr", pf.Container.addr.String())
+					return pf.Start()
+				})
+			}(pf)
+		}
+		forwarderContainers[uint16(ifid)] = container
 	}
 
 	grpcAddr, err := net.ResolveTCPAddr("tcp", cfg.Coligate.ColigateGRPCAddr)
@@ -112,23 +156,23 @@ func Init(ctx context.Context, cfg *config.Config, cleanup *app.Cleanup,
 
 	// Loads the salt for load balancing from the config.
 	// If the salt is empty a random value will be chosen
-	salt := []byte(config.Salt)
-	if config.Salt == "" {
+	salt := []byte(coligateConfig.Salt)
+	if coligateConfig.Salt == "" {
 		salt := make([]byte, 16)
 		rand.Read(salt)
 	}
 
 	p := Processor{
-		localIA:       topo.IA(),
-		borderRouters: borderRouters,
+		localIA: topo.IA(),
 		// TODO(rohrerj) check cleanupChannel capacity
-		cleanupChannel:          make(chan *storage.UpdateTask, 1000),
-		dataChannels:            make([]chan *dataPacket, config.NumWorkers),
-		controlUpdateChannels:   make([]chan *storage.UpdateTask, config.NumWorkers),
-		controlDeletionChannels: make([]chan *storage.DeletionTask, config.NumWorkers),
-		saltHasher:              common.NewFnv1aHasher(salt),
-		metrics:                 initializeMetrics(metrics),
-		numWorkers:              config.NumWorkers,
+		cleanupChannel:            make(chan *storage.UpdateTask, 1000),
+		dataChannels:              make([]chan *dataPacket, coligateConfig.NumWorkers),
+		controlUpdateChannels:     make([]chan *storage.UpdateTask, coligateConfig.NumWorkers),
+		controlDeletionChannels:   make([]chan *storage.DeletionTask, coligateConfig.NumWorkers),
+		saltHasher:                common.NewFnv1aHasher(salt),
+		metrics:                   coligateMetrics,
+		numWorkers:                coligateConfig.NumWorkers,
+		packetForwarderContainers: forwarderContainers,
 	}
 
 	cleanup.Add(func() error {
@@ -138,16 +182,16 @@ func Init(ctx context.Context, cfg *config.Config, cleanup *app.Cleanup,
 
 	// Creates all the channels and starts the go routines
 	for i := 0; i < p.numWorkers; i++ {
-		p.dataChannels[i] = make(chan *dataPacket, config.MaxQueueSizePerWorker)
+		p.dataChannels[i] = make(chan *dataPacket, coligateConfig.MaxQueueSizePerWorker)
 		p.controlUpdateChannels[i] = make(chan *storage.UpdateTask,
-			config.MaxQueueSizePerWorker)
+			coligateConfig.MaxQueueSizePerWorker)
 		// TODO(rohrerj) Check control deletion channel size
 		p.controlDeletionChannels[i] = make(chan *storage.DeletionTask, 1000)
 		func(i int) {
 			g.Go(func() error {
 				defer log.HandlePanic()
-				return p.workerReceiveEntry(config,
-					uint32(i), uint32(config.ColibriGatewayID), localAS,
+				return p.workerReceiveEntry(coligateConfig,
+					uint32(i), uint32(coligateConfig.ColibriGatewayID), localAS,
 				)
 			})
 		}(i)
@@ -161,15 +205,15 @@ func Init(ctx context.Context, cfg *config.Config, cleanup *app.Cleanup,
 
 	g.Go(func() error {
 		defer log.HandlePanic()
-		return p.initControlPlane(config, cleanup, grpcAddr)
+		return p.initControlPlane(coligateConfig, cleanup, grpcAddr)
 	})
 
 	// We start the data plane as soon as we retrieved the active reservations from colibri service
-	if err := p.loadActiveReservationsFromColibriService(ctx, config, colibriServiceAddresses[0],
-		config.COSyncTimeout, cfg.General.ID); err != nil {
+	if err := p.loadActiveReservationsFromColibriService(ctx, coligateConfig,
+		colibriServiceAddresses[0], coligateConfig.COSyncTimeout, cfg.General.ID); err != nil {
 		return err
 	}
-	if err := p.initDataPlane(config, coligateInfo.Addr, g, cleanup); err != nil {
+	if err := p.initDataPlane(coligateConfig, coligateInfo.Addr, g, cleanup); err != nil {
 		return err
 	}
 
@@ -184,9 +228,11 @@ type ColigateMetrics struct {
 	UpdateSigmasTotal             libmetrics.Counter
 	DataPacketInTotal             libmetrics.Counter
 	DataPacketInInvalid           libmetrics.Counter
+	DataPacketInDropped           libmetrics.Counter
 	WorkerPacketInTotal           libmetrics.Counter
 	WorkerPacketInInvalid         libmetrics.Counter
 	WorkerPacketOutTotal          libmetrics.Counter
+	WorkerPacketOutError          libmetrics.Counter
 	WorkerReservationUpdateTotal  libmetrics.Counter
 }
 
@@ -206,12 +252,16 @@ func initializeMetrics(metrics *common.Metrics) *ColigateMetrics {
 			metrics.DataPacketInTotal),
 		DataPacketInInvalid: libmetrics.NewPromCounter(
 			metrics.DataPacketInInvalid),
+		DataPacketInDropped: libmetrics.NewPromCounter(
+			metrics.DataPacketInDropped),
 		WorkerPacketInTotal: libmetrics.NewPromCounter(
 			metrics.WorkerPacketInTotal),
 		WorkerPacketInInvalid: libmetrics.NewPromCounter(
 			metrics.WorkerPacketInInvalid),
 		WorkerPacketOutTotal: libmetrics.NewPromCounter(
 			metrics.WorkerPacketOutTotal),
+		WorkerPacketOutError: libmetrics.NewPromCounter(
+			metrics.WorkerPacketOutError),
 		WorkerReservationUpdateTotal: libmetrics.NewPromCounter(
 			metrics.WorkerReservationUpdateTotal),
 	}
@@ -220,7 +270,8 @@ func initializeMetrics(metrics *common.Metrics) *ColigateMetrics {
 
 // Loads the active EE Reservations from the colibri service
 func (p *Processor) loadActiveReservationsFromColibriService(ctx context.Context,
-	config *config.ColigateConfig, colibiServiceAddr *net.UDPAddr, timeout int, coligateId string) error {
+	config *config.ColigateConfig, colibiServiceAddr *net.UDPAddr, timeout int,
+	coligateId string) error {
 
 	log.Info("Loading active reservation indices from colibri service")
 	var response *copb.ActiveIndicesResponse
@@ -247,12 +298,10 @@ func (p *Processor) loadActiveReservationsFromColibriService(ctx context.Context
 	p.metrics.LoadActiveReservationsTotal.Add(float64(len(response.Reservations)))
 	for _, respReservation := range response.Reservations {
 		highestValidity := time.Unix(0, 0)
-		id, err := libtypes.NewID(libaddr.AS(respReservation.Id.Asid), respReservation.Id.Suffix)
-		if err != nil {
-			log.Debug("error parsing reservation id", "err", err)
-			continue
-		}
-		res := storage.NewReservation(string(id.ToRaw()),
+		newId := [12]byte{}
+		copy(newId[:], respReservation.Id.Suffix)
+
+		res := storage.NewReservation(newId,
 			[]storage.HopField{
 				{
 					EgressId: uint16(respReservation.Egress),
@@ -273,21 +322,21 @@ func (p *Processor) loadActiveReservationsFromColibriService(ctx context.Context
 		// Registers the reservation for deletion once it expires
 		p.cleanupChannel <- task
 
-		p.controlUpdateChannels[p.getWorkerForResId([]byte(task.Reservation.Id))] <- task
+		p.controlUpdateChannels[p.getWorkerForResId(task.Reservation.Id)] <- task
 	}
 	log.Info("Successfully loaded active reservation indices from colibri service")
 	return nil
 }
 
-func (p *Processor) getWorkerForResId(resId []byte) uint32 {
-	return p.saltHasher.Hash(resId) % uint32(p.numWorkers)
+func (p *Processor) getWorkerForResId(resId [12]byte) uint32 {
+	return p.saltHasher.Hash(resId[:]) % uint32(p.numWorkers)
 }
 
 // Initializes the cleanup routine that removes outdated reservations
 func (p *Processor) initCleanupRoutine() {
 	log.Info("Init cleanup routine")
 
-	reservationExpirations := make(map[string]time.Time)
+	reservationExpirations := make(map[[12]byte]time.Time)
 
 	updateExpirationMapping := (func(task *storage.UpdateTask) {
 		p.metrics.CleanupReservationUpdateTotal.Add(1)
@@ -297,37 +346,53 @@ func (p *Processor) initCleanupRoutine() {
 			reservationExpirations[task.Reservation.Id] = task.HighestValidity
 		}
 	})
-	for !p.exit { // TODO(rohrerj) check CPU usage
-		if len(reservationExpirations) == 0 {
-			task := <-p.cleanupChannel
+	t := time.NewTicker(1 * time.Second)
+	defer t.Stop()
+
+	// The cleanup routine gets notified about all reservation updates and keeps track
+	// of reservation validities. If a reservation is expired it sends an reservation
+	// deletion task to the worker. This check is done periodically but gets delayed
+	// if a lot of reservation updates are incoming.
+	for !p.exit {
+		select {
+		case task := <-p.cleanupChannel:
 			if task == nil {
 				return
 			}
 			updateExpirationMapping(task)
-		}
-		for resId, val := range reservationExpirations {
-		out:
-			for {
-				select {
-				case task := <-p.cleanupChannel:
-					if task == nil {
-						return
+		case now := <-t.C:
+			updateTime := false
+			for resId, val := range reservationExpirations {
+			out:
+				for {
+					select {
+					case task := <-p.cleanupChannel:
+						if task == nil {
+							return
+						}
+						updateExpirationMapping(task)
+						if task.Reservation.Id == resId {
+							// Updated current value in case it got changed
+							val = reservationExpirations[resId]
+						}
+						updateTime = true
+					default:
+						if updateTime {
+							// a long time might have passed and therfore
+							// the time "now" might not be valid anymore
+							now = time.Now()
+							updateTime = false
+						}
+						break out
 					}
-					updateExpirationMapping(task)
-					if task.Reservation.Id == resId {
-						// Updated current value in case it got changed
-						val = reservationExpirations[resId]
-					}
-				default:
-					break out
 				}
-			}
-			if time.Until(val) < 0 {
-				p.metrics.CleanupReservationDeleted.Add(1)
+				if val.Before(now) {
+					p.metrics.CleanupReservationDeleted.Add(1)
 
-				workerId := p.getWorkerForResId([]byte(resId))
-				p.controlDeletionChannels[workerId] <- storage.NewDeletionTask(resId)
-				delete(reservationExpirations, resId)
+					workerId := p.getWorkerForResId(resId)
+					p.controlDeletionChannels[workerId] <- storage.NewDeletionTask(resId)
+					delete(reservationExpirations, resId)
+				}
 			}
 		}
 	}
@@ -367,18 +432,47 @@ func (p *Processor) initDataPlane(config *config.ColigateConfig, gatewayAddr *ne
 		return err
 	}
 	cleanup.Add(func() error { udpConn.Close(); return nil })
-	msgs := make([]ipv4.Message, numOfMessages)
-	for i := 0; i < numOfMessages; i++ {
+	msgs := make([]ipv4.Message, numMessages)
+	for i := 0; i < numMessages; i++ {
 		msgs[i].Buffers = [][]byte{make([]byte, bufSize)}
 	}
 
 	var ipv4Conn *ipv4.PacketConn = ipv4.NewPacketConn(udpConn)
+	recvChannel := make(chan []byte, receiverChannelSize)
+	g.Go(func() error {
+		defer log.HandlePanic()
+		dataPacketInInvalidPromCounter := p.metrics.DataPacketInInvalid
+		dataPacketInDroppedPromCounter := p.metrics.DataPacketInDropped
+		for !p.exit {
+			task := <-recvChannel
+			if task == nil {
+				return nil
+			}
+			d, err := Parse(task)
+			if err != nil {
+				log.Debug("error while parsing headers", "err", err)
+				dataPacketInInvalidPromCounter.Add(1)
+				continue
+			}
+
+			select {
+			case p.dataChannels[p.getWorkerForResId(d.id)] <- d:
+			default:
+				dataPacketInDroppedPromCounter.Add(1)
+				continue // Packet dropped
+			}
+
+		}
+		return nil
+	})
 
 	g.Go(func() error {
 		defer log.HandlePanic()
+		defer func() {
+			recvChannel <- nil
+		}()
 		dataPacketInTotalPromCounter := p.metrics.DataPacketInTotal
-		dataPacketInInvalidPromCounter := p.metrics.DataPacketInInvalid
-
+		dataPacketInDroppedPromCounter := p.metrics.DataPacketInDropped
 		for !p.exit {
 			numPkts, err := ipv4Conn.ReadBatch(msgs, syscall.MSG_WAITFORONE)
 			if err != nil {
@@ -388,34 +482,14 @@ func (p *Processor) initDataPlane(config *config.ColigateConfig, gatewayAddr *ne
 			if numPkts == 0 {
 				continue
 			}
-			log.Debug("received data packets")
 			dataPacketInTotalPromCounter.Add(float64(numPkts))
 			for _, pkt := range msgs[:numPkts] {
-				var d *dataPacket
-
-				d, err = Parse(pkt.Buffers[0][:pkt.N])
-				if err != nil {
-					log.Debug("error while parsing headers", "err", err)
-					dataPacketInInvalidPromCounter.Add(1)
-					continue
-				}
-				if int(d.scionLayer.PayloadLen) != len(d.scionLayer.Payload) ||
-					d.scionLayer.PayloadLen != d.colibriPath.InfoField.OrigPayLen {
-					// Packet too large or inconsistent payload size.
-					continue
-				}
-				d.pktArrivalTime = time.Now()
-				id, err := libtypes.NewID(d.scionLayer.SrcIA.AS(),
-					d.colibriPath.InfoField.ResIdSuffix)
-				if err != nil {
-					log.Debug("cannot parse reservation id")
-					continue
-				}
-
+				rawPacket := make([]byte, pkt.N)
+				copy(rawPacket, pkt.Buffers[0][:pkt.N])
 				select {
-				case p.dataChannels[p.getWorkerForResId(id.ToRaw())] <- d:
+				case recvChannel <- rawPacket:
 				default:
-					continue // Packet dropped
+					dataPacketInDroppedPromCounter.Add(1)
 				}
 			}
 
@@ -425,36 +499,20 @@ func (p *Processor) initDataPlane(config *config.ColigateConfig, gatewayAddr *ne
 	return nil
 }
 
-// Internal method to get the address of the corresponding border router
-// to forward the outgoing packets
-func (p *Processor) getBorderRouterConnection(proc *dataPacket) (*ipv4.PacketConn, error) {
-	var egressId uint16 = proc.colibriPath.GetCurrentHopField().EgressId
-	conn, found := p.borderRouters[egressId]
-	if !found {
-		return nil, serrors.New("egress interface is invalid:", "egressId", egressId)
-	}
-	return conn, nil
-}
-
 // Configures a goroutine to listen for the data plane channel and control plane reservation updates
 func (p *Processor) workerReceiveEntry(config *config.ColigateConfig, workerId uint32,
 	gatewayId uint32, localAS libaddr.AS) error {
 
 	log.Info("Init worker", "workerId", workerId)
-	worker := NewWorker(config, workerId, gatewayId, localAS)
-
+	worker := NewWorker(config, workerId, gatewayId, localAS,
+		p.packetForwarderContainers, p.metrics)
 	workerPacketInTotalPromCounter := p.metrics.WorkerPacketInTotal
 	workerPacketInInvalidPromCounter := p.metrics.WorkerPacketInInvalid
-	workerPacketOutTotalPromCounter := p.metrics.WorkerPacketOutTotal
 	workerReservationUpdateTotalPromCounter := p.metrics.WorkerReservationUpdateTotal
-
-	writeMsgs := make([]ipv4.Message, 1)
-	writeMsgs[0].Buffers = [][]byte{make([]byte, bufSize)} // TODO(rohrerj) Check for optimizations
 
 	ch := p.dataChannels[workerId]
 	chres := p.controlUpdateChannels[workerId]
 	chresD := p.controlDeletionChannels[workerId]
-
 	for !p.exit {
 		// Check whether new reservation indices have to be processed.
 		// This has priority above the data plane packets.
@@ -463,7 +521,6 @@ func (p *Processor) workerReceiveEntry(config *config.ColigateConfig, workerId u
 			if task == nil {
 				return nil
 			}
-			log.Debug("Worker received reservation update", "workerId", workerId)
 			workerReservationUpdateTotalPromCounter.Add(1)
 			task.Execute(worker.Storage)
 			continue
@@ -475,39 +532,29 @@ func (p *Processor) workerReceiveEntry(config *config.ColigateConfig, workerId u
 			if d == nil { // If d is nil it is meant to be a exit sequence
 				return nil
 			}
-			log.Debug("Worker received data packet", "workerId", workerId,
-				"resId", string(d.colibriPath.InfoField.ResIdSuffix))
 			workerPacketInTotalPromCounter.Add(1)
-			borderRouterConn, err := p.getBorderRouterConnection(d)
-			if err != nil {
-				log.Debug("Error getting border router connection", "err", err)
+			if err := worker.realParse(d); err != nil {
+				log.Debug("Worker received error while parsing.", "workerId", workerId,
+					"error", err.Error())
 				workerPacketInInvalidPromCounter.Add(1)
 				continue
 			}
-			if err = worker.process(d); err != nil {
+			if err := worker.process(d); err != nil {
 				log.Debug("Worker received error while processing.", "workerId", workerId,
 					"error", err.Error())
 				workerPacketInInvalidPromCounter.Add(1)
 				continue
 			}
-
-			writeMsgs[0].Buffers[0] = d.rawPacket
-
-			borderRouterConn.WriteBatch(writeMsgs, syscall.MSG_DONTWAIT)
-			workerPacketOutTotalPromCounter.Add(1)
-			log.Debug("Worker forwarded packet", "workerId", workerId)
 		case task := <-chres:
 			if task == nil {
 				return nil
 			}
-			log.Debug("Worker received reservation update", "workerId", workerId)
 			workerReservationUpdateTotalPromCounter.Add(1)
 			task.Execute(worker.Storage)
 		case task := <-chresD: // Reservation deletion received.
 			if task == nil {
 				return nil
 			}
-			log.Debug("Worker received reservation deletion", "workerId", workerId)
 			workerReservationUpdateTotalPromCounter.Add(1)
 			task.Execute(worker.Storage)
 		}

@@ -187,9 +187,9 @@ func setupColibri(g *errgroup.Group, cleanup *app.Cleanup, cfg *config.Config, c
 	}
 	// TODO(juagargi) Add security for connection with colibri gateway.
 	colibriService := &colgrpc.ColibriService{
-		Store:     colibriStore,
-		Coligates: coligateAddresses,
+		Store: colibriStore,
 	}
+	colibriService.PrepareColibriGatewayServiceClients(&coligateAddresses)
 	colServer := coliquic.NewGrpcServer(libgrpc.UnaryServerInterceptor())
 	tcpColServer := grpc.NewServer(libgrpc.UnaryServerInterceptor())
 	colpb.RegisterColibriServiceServer(colServer, colibriService)

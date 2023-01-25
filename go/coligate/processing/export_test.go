@@ -15,16 +15,17 @@
 package processing
 
 import (
+	"net"
 	"time"
-
-	"golang.org/x/net/ipv4"
 
 	"github.com/scionproto/scion/go/coligate/storage"
 	libaddr "github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/slayers"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	common "github.com/scionproto/scion/go/pkg/coligate"
 	"github.com/scionproto/scion/go/pkg/coligate/config"
+	"golang.org/x/sync/errgroup"
 )
 
 func (p *Processor) InitCleanupRoutine() {
@@ -79,6 +80,32 @@ func InitializeMetrics() *ColigateMetrics {
 	return initializeMetrics(common.NewMetrics())
 }
 
+func (p *Processor) SetupPacketForwarder(g *errgroup.Group, brInterfaces map[uint16]*net.UDPAddr,
+	coligateMetrics *ColigateMetrics) {
+
+	forwardChannels := make(map[uint16]*packetForwarderContainer)
+	for ifid, addr := range brInterfaces {
+		container := NewPacketForwarderContainer(addr, 16, coligateMetrics, 1)
+		pf := container.NewPacketForwarder()
+		g.Go(func() error {
+			defer log.HandlePanic()
+			pf.Start()
+			return nil
+		})
+		forwardChannels[uint16(ifid)] = container
+	}
+	p.packetForwarderContainers = forwardChannels
+}
+
+func (p *Processor) GetPacketForwarderContainers() map[uint16]*packetForwarderContainer {
+	return p.packetForwarderContainers
+}
+func (p *Processor) StopPacketForwarder() {
+	for _, v := range p.packetForwarderContainers {
+		v.Forwarders[0].ForwardChannel <- nil
+	}
+}
+
 func (p *Processor) SetMetrics(m *ColigateMetrics) {
 	p.metrics = m
 }
@@ -87,38 +114,44 @@ func (p *Processor) Shutdown() {
 	p.shutdown()
 }
 
-func (p *Processor) SetBorderRouterConnections(conn map[uint16]*ipv4.PacketConn) {
-	p.borderRouters = conn
-}
-
 type DataPacket struct {
 	PktArrivalTime time.Time
 	ScionLayer     *slayers.SCION
 	ColibriPath    *colibri.ColibriPath
 	Reservation    *storage.Reservation
 	RawPacket      []byte
+	Id             [12]byte
 }
 
-func (proc *DataPacket) Parse() *dataPacket {
+func (pkt *DataPacket) Convert() *dataPacket {
 	return &dataPacket{
-		pktArrivalTime: proc.PktArrivalTime,
-		scionLayer:     proc.ScionLayer,
-		colibriPath:    proc.ColibriPath,
-		reservation:    proc.Reservation,
-		rawPacket:      proc.RawPacket,
+		pktArrivalTime: pkt.PktArrivalTime,
+		scionLayer:     pkt.ScionLayer,
+		colibriPath:    pkt.ColibriPath,
+		reservation:    pkt.Reservation,
+		rawPacket:      pkt.RawPacket,
+		id:             pkt.Id,
 	}
 }
 
-func (w *Worker) Validate(proc *DataPacket) error {
-	return w.validate(proc.Parse())
+func (w *Worker) Validate(pkt *dataPacket) error {
+	return w.validate(pkt)
 }
 
-func (w *Worker) PerformTrafficMonitoring(proc *DataPacket) error {
-	return w.performTrafficMonitoring(proc.Parse())
+func (w *Worker) PerformTrafficMonitoring(pkt *dataPacket) error {
+	return w.performTrafficMonitoring(pkt)
 }
 
-func (w *Worker) Stamp(d *DataPacket) error {
-	return w.stamp(d.Parse())
+func (w *Worker) Stamp(pkt *dataPacket) error {
+	return w.stamp(pkt)
+}
+
+func (w *Worker) Process(pkt *dataPacket) error {
+	return w.process(pkt)
+}
+
+func (w *Worker) ForwardPacket(pkt *dataPacket) {
+	w.forwardPacket(pkt)
 }
 
 func (w *Worker) UpdateCounter() {

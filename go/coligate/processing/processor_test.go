@@ -15,12 +15,14 @@
 package processing_test
 
 import (
+	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/google/gopacket"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sync/errgroup"
@@ -49,6 +51,9 @@ func ErrGroupWait(e *errgroup.Group, duration time.Duration) error {
 
 var coligateMetrics *proc.ColigateMetrics = proc.InitializeMetrics()
 
+var reservationIdOne [12]byte = [12]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+var reservationIdLeftOne [12]byte = [12]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
 // Tests sequentially that write-read-repeat returns all reservations
 // and that the channel is empty after the exit.
 func TestCleanupRoutineSingleTaskSequentially(t *testing.T) {
@@ -68,9 +73,11 @@ func TestCleanupRoutineSingleTaskSequentially(t *testing.T) {
 	})
 
 	for i := 0; i < L; i++ {
+		newId := reservationIdLeftOne
+		binary.BigEndian.PutUint32(newId[8:12], uint32(i))
 		cleanupChannel <- &storage.UpdateTask{
 			Reservation: &storage.Reservation{
-				Id: "A" + fmt.Sprint(i),
+				Id: newId,
 			},
 			HighestValidity: now.Add(1 * time.Millisecond),
 		}
@@ -78,8 +85,8 @@ func TestCleanupRoutineSingleTaskSequentially(t *testing.T) {
 		case task := <-reservationDeletionChannels[0]:
 			assert.NotNil(t, task)
 			assert.IsType(t, &storage.DeletionTask{}, task)
-			assert.Equal(t, "A"+fmt.Sprint(i), task.ResId)
-		case <-time.After(1 * time.Second):
+			assert.Equal(t, newId, task.ResId)
+		case <-time.After(1100 * time.Millisecond):
 			assert.Fail(t, "reservation not deleted")
 		}
 	}
@@ -113,9 +120,11 @@ func TestCleanupRoutineBatchOfTasksSequentially(t *testing.T) {
 
 	now := time.Now()
 	for i := 0; i < L; i++ {
+		newId := reservationIdLeftOne
+		binary.BigEndian.PutUint32(newId[8:12], uint32(i))
 		cleanupChannel <- &storage.UpdateTask{
 			Reservation: &storage.Reservation{
-				Id: "A" + fmt.Sprint(i),
+				Id: newId,
 			},
 			HighestValidity: now.Add(1 * time.Millisecond),
 		}
@@ -126,7 +135,7 @@ func TestCleanupRoutineBatchOfTasksSequentially(t *testing.T) {
 		select {
 		case <-reservationDeletionChannels[0]:
 			reportedReservations++
-		case <-time.After(20 * time.Millisecond):
+		case <-time.After(1100 * time.Millisecond):
 			exit = true
 		}
 	}
@@ -154,18 +163,22 @@ func TestCleanupRoutineSupersedeOld(t *testing.T) {
 	now := time.Now()
 
 	for i := 0; i < L; i++ {
+		newId := reservationIdLeftOne
+		binary.BigEndian.PutUint32(newId[8:12], uint32(i))
 		cleanupChannel <- &storage.UpdateTask{
 			Reservation: &storage.Reservation{
-				Id: "A" + fmt.Sprint(i),
+				Id: newId,
 			},
 			HighestValidity: now.Add(10 * time.Millisecond),
 		}
 	}
 
 	for i := 0; i < L; i++ {
+		newId := reservationIdLeftOne
+		binary.BigEndian.PutUint32(newId[8:12], uint32(i))
 		cleanupChannel <- &storage.UpdateTask{
 			Reservation: &storage.Reservation{
-				Id: "A" + fmt.Sprint(i),
+				Id: newId,
 			},
 			HighestValidity: now.Add(20 * time.Millisecond),
 		}
@@ -178,7 +191,7 @@ func TestCleanupRoutineSupersedeOld(t *testing.T) {
 		case task := <-reservationDeletionChannels[0]:
 			assert.IsType(t, &storage.DeletionTask{}, task)
 			reportedReservations++
-		case <-time.After(40 * time.Millisecond):
+		case <-time.After(1100 * time.Millisecond):
 			exit = true
 		}
 	}
@@ -189,31 +202,32 @@ func TestCleanupRoutineSupersedeOld(t *testing.T) {
 }
 
 func BenchmarkWorker(b *testing.B) {
+	errGroup := &errgroup.Group{}
 	c := &proc.Processor{}
 	c.SetMetrics(coligateMetrics)
 	updateChannels := c.CreateControlUpdateChannels(1, 1000)
 	c.CreateControlDeletionChannels(1, 1)
 	dataChannels := c.CreateDataChannels(1, 1000)
-	errGroup := &errgroup.Group{}
-	errGroup.Go(func() error {
-		return c.WorkerReceiveEntry(getColigateConfiguration(), 0, 1, addr.MustIAFrom(1, 1).AS())
-	})
 
-	borderRouterConnection := make(map[uint16]*ipv4.PacketConn)
 	borderRouterAddr, err := net.ResolveUDPAddr("udp", "localhost:30000")
 	if err != nil {
 		b.Error(err)
 	}
-	conn, _ := net.DialUDP("udp", nil, borderRouterAddr)
-	borderRouterConnection[uint16(2)] = ipv4.NewPacketConn(conn)
-	c.SetBorderRouterConnections(borderRouterConnection)
+	c.SetupPacketForwarder(errGroup, map[uint16]*net.UDPAddr{
+		2: borderRouterAddr,
+	}, coligateMetrics)
+
+	errGroup.Go(func() error {
+		return c.WorkerReceiveEntry(getColigateConfiguration(), 0, 1, addr.MustIAFrom(1, 1).AS())
+	})
+
 	now := time.Now()
 	updateChannels[0] <- &storage.UpdateTask{
 		Reservation: &storage.Reservation{
-			Id: string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			Id: reservationIdOne,
 			Indices: map[uint8]*storage.ReservationIndex{
 				1: {
-					Index:    0,
+					Index:    1,
 					Validity: now.Add(12 * time.Second),
 					Sigmas: [][]byte{
 						{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -257,15 +271,17 @@ func BenchmarkWorker(b *testing.B) {
 	defaultPkt := &proc.DataPacket{
 		PktArrivalTime: time.Now(),
 		ScionLayer: &slayers.SCION{
-			PathType: 4,
-			SrcIA:    addr.MustIAFrom(1, 1),
+			PathType:   4,
+			SrcIA:      addr.MustIAFrom(1, 1),
+			PayloadLen: 400,
 		},
 		ColibriPath: &colipath.ColibriPath{
 			InfoField: &colipath.InfoField{
 				Ver:         1,
-				ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+				ResIdSuffix: reservationIdOne[:],
 				BwCls:       60,
 				ExpTick:     uint32(now.Add(12*time.Second).Unix() / 4),
+				HFCount:     6,
 			},
 			HopFields: []*colipath.HopField{
 				{
@@ -301,12 +317,50 @@ func BenchmarkWorker(b *testing.B) {
 			},
 		},
 		RawPacket: make([]byte, 400),
+		Id:        reservationIdOne,
 	}
-	time.Sleep(1 * time.Millisecond)
+	defaultPkt.ScionLayer.Path = defaultPkt.ColibriPath
+	serializeBuffer := gopacket.NewSerializeBuffer()
+	defaultPkt.ScionLayer.SerializeTo(serializeBuffer, gopacket.SerializeOptions{})
+	copy(defaultPkt.RawPacket, serializeBuffer.Bytes())
+
+	server, err := net.ListenUDP("udp", borderRouterAddr)
+	if err != nil {
+		b.Log(err)
+		b.FailNow()
+	}
+	var counter int
+	errGroup.Go(func() error {
+		msgs := make([]ipv4.Message, 10)
+		for i := 0; i < 10; i++ {
+			msgs[i].Buffers = [][]byte{make([]byte, 500)}
+		}
+
+		packetConn := ipv4.NewPacketConn(server)
+
+		for {
+			n, err := packetConn.ReadBatch(msgs, syscall.MSG_WAITFORONE)
+			if err != nil {
+				return err
+			}
+			counter += n
+		}
+	})
+	time.Sleep(10 * time.Millisecond)
+	pkt := defaultPkt.Convert()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dataChannels[0] <- defaultPkt.Parse()
+		dataChannels[0] <- pkt
 	}
 	dataChannels[0] <- nil
+	for len(dataChannels[0]) != 0 {
+	}
+	b.StopTimer()
+	c.StopPacketForwarder()
+	time.Sleep(100 * time.Millisecond)
+	server.Close()
 	errGroup.Wait()
+
+	// check that the majority of the packets arrived
+	assert.GreaterOrEqual(b, float64(counter), float64(b.N)*0.99-128)
 }

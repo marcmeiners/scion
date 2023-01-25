@@ -23,59 +23,62 @@ import (
 	"github.com/scionproto/scion/go/coligate/storage"
 )
 
+var reservationIdOne [12]byte = [12]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+
 func TestReservationNotFound(t *testing.T) {
 	storage := &storage.Storage{}
 	storage.InitStorageWithData(nil)
-	res, found := storage.UseReservation("A", 0, time.Now())
+	res, found := storage.UseReservation(reservationIdOne,
+		0, time.Now())
 	assert.False(t, found)
 	assert.Nil(t, res)
 }
 
 func TestReservationVersionNotFound(t *testing.T) {
 	s := &storage.Storage{}
-	resmap := make(map[string]*storage.Reservation)
+	resmap := make(map[[12]byte]*storage.Reservation)
 	resvmap := make(map[uint8]*storage.ReservationIndex)
 	resvmap[0] = &storage.ReservationIndex{
 		Index:    0,
 		Validity: time.Now().Add(1 * time.Minute),
 	}
 
-	resmap["A"] = &storage.Reservation{
-		Id:            "A",
+	resmap[reservationIdOne] = &storage.Reservation{
+		Id:            reservationIdOne,
 		Indices:       resvmap,
 		ActiveIndexId: 0,
 	}
 	s.InitStorageWithData(resmap)
 
-	res, found := s.UseReservation("A", 1, time.Now())
+	res, found := s.UseReservation(reservationIdOne, 1, time.Now())
 	assert.False(t, found)
 	assert.Nil(t, res)
 }
 
 func TestActiveVersionIsProvidedVersion(t *testing.T) {
 	s := &storage.Storage{}
-	resmap := make(map[string]*storage.Reservation)
+	resmap := make(map[[12]byte]*storage.Reservation)
 	resvmap := make(map[uint8]*storage.ReservationIndex)
 	resvmap[0] = &storage.ReservationIndex{
 		Index:    0,
 		Validity: time.Now().Add(1 * time.Minute),
 	}
 
-	resmap["A"] = &storage.Reservation{
-		Id:            "A",
+	resmap[reservationIdOne] = &storage.Reservation{
+		Id:            reservationIdOne,
 		Indices:       resvmap,
 		ActiveIndexId: 0,
 	}
 	s.InitStorageWithData(resmap)
 
-	res, found := s.UseReservation("A", 0, time.Now())
+	res, found := s.UseReservation(reservationIdOne, 0, time.Now())
 	assert.True(t, found)
 	assert.Equal(t, uint8(0), res.ActiveIndexId)
 }
 
 func TestActiveVersionOlder(t *testing.T) {
 	s := &storage.Storage{}
-	resmap := make(map[string]*storage.Reservation)
+	resmap := make(map[[12]byte]*storage.Reservation)
 	resvmap := make(map[uint8]*storage.ReservationIndex)
 	resvmap[0] = &storage.ReservationIndex{
 		Index:    0,
@@ -86,14 +89,14 @@ func TestActiveVersionOlder(t *testing.T) {
 		Validity: time.Now().Add(2 * time.Minute),
 	}
 
-	resmap["A"] = &storage.Reservation{
-		Id:            "A",
+	resmap[reservationIdOne] = &storage.Reservation{
+		Id:            reservationIdOne,
 		Indices:       resvmap,
 		ActiveIndexId: 0,
 	}
 	s.InitStorageWithData(resmap)
 
-	res, found := s.UseReservation("A", 1, time.Now())
+	res, found := s.UseReservation(reservationIdOne, 1, time.Now())
 	assert.True(t, found)
 	assert.Equal(t, uint8(1), res.ActiveIndexId)
 	_, found = res.Indices[0]
@@ -103,7 +106,7 @@ func TestActiveVersionOlder(t *testing.T) {
 
 func TestActiveVersionNewer(t *testing.T) {
 	s := &storage.Storage{}
-	resmap := make(map[string]*storage.Reservation)
+	resmap := make(map[[12]byte]*storage.Reservation)
 	resvmap := make(map[uint8]*storage.ReservationIndex)
 	resvmap[0] = &storage.ReservationIndex{
 		Index:    0,
@@ -114,13 +117,13 @@ func TestActiveVersionNewer(t *testing.T) {
 		Validity: time.Now().Add(1 * time.Minute),
 	}
 
-	resmap["A"] = &storage.Reservation{
-		Id:            "A",
+	resmap[reservationIdOne] = &storage.Reservation{
+		Id:            reservationIdOne,
 		Indices:       resvmap,
 		ActiveIndexId: 0,
 	}
 	s.InitStorageWithData(resmap)
-	_, found := s.UseReservation("A", 1, time.Now())
+	_, found := s.UseReservation(reservationIdOne, 1, time.Now())
 	assert.False(t, found)
 	_, found = resvmap[1]
 	assert.False(t, found)
@@ -128,7 +131,7 @@ func TestActiveVersionNewer(t *testing.T) {
 
 func TestPacketValidityIsChecked(t *testing.T) {
 	s := &storage.Storage{}
-	resmap := make(map[string]*storage.Reservation)
+	resmap := make(map[[12]byte]*storage.Reservation)
 	resvmap := make(map[uint8]*storage.ReservationIndex)
 	now := time.Now()
 	resvmap[0] = &storage.ReservationIndex{
@@ -136,17 +139,18 @@ func TestPacketValidityIsChecked(t *testing.T) {
 		Validity: now,
 	}
 
-	resmap["A"] = &storage.Reservation{
-		Id:            "A",
+	resmap[reservationIdOne] = &storage.Reservation{
+		Id:            reservationIdOne,
 		Indices:       resvmap,
 		ActiveIndexId: 0,
 	}
 	s.InitStorageWithData(resmap)
 
-	res, found := s.UseReservation("A", 0, now)
+	res, found := s.UseReservation(reservationIdOne, 0, now)
 	assert.True(t, found)
-	assert.Equal(t, "A", res.Id)
-	res, found = s.UseReservation("A", 0, now.Add(1*time.Second))
+	assert.Equal(t, reservationIdOne, res.Id)
+	res, found = s.UseReservation(reservationIdOne,
+		0, now.Add(1*time.Second))
 	assert.False(t, found)
 	assert.Nil(t, res)
 }

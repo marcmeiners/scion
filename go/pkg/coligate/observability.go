@@ -17,9 +17,11 @@ type Metrics struct {
 	UpdateSigmasTotal             *prometheus.CounterVec
 	DataPacketInTotal             *prometheus.CounterVec
 	DataPacketInInvalid           *prometheus.CounterVec
+	DataPacketInDropped           *prometheus.CounterVec
 	LoadActiveReservationsTotal   *prometheus.CounterVec
 	WorkerPacketInTotal           *prometheus.CounterVec
 	WorkerPacketOutTotal          *prometheus.CounterVec
+	WorkerPacketOutError          *prometheus.CounterVec
 	WorkerPacketInInvalid         *prometheus.CounterVec
 	WorkerReservationUpdateTotal  *prometheus.CounterVec
 	CleanupReservationUpdateTotal *prometheus.CounterVec
@@ -57,8 +59,16 @@ func NewMetrics() *Metrics {
 		DataPacketInInvalid: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "coligate_data_packet_in_invalid",
-				Help: `"Total number of data packets received by the colibri gateway 
-				whose headers cannot be parsed correctly."`,
+				Help: "Total number of data packets received by the colibri gateway " +
+					"whose headers cannot be parsed correctly.",
+			},
+			[]string{},
+		),
+		DataPacketInDropped: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "coligate_data_packet_in_dropped",
+				Help: "Total number of data packets received by the colibri gateway " +
+					"that were dropped because of busy workers.",
 			},
 			[]string{},
 		),
@@ -80,6 +90,13 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{
 				Name: "coligate_worker_packet_out_total",
 				Help: "Total number of data packets forwarded by the workers.",
+			},
+			[]string{},
+		),
+		WorkerPacketOutError: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "coligate_worker_packet_out_error",
+				Help: "Total number of data packets dropped by workers because of writing errors",
 			},
 			[]string{},
 		),
@@ -107,8 +124,8 @@ func NewMetrics() *Metrics {
 		CleanupReservationUpdateNew: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "coligate_cleanup_reservation_update_new",
-				Help: `"Total number of reservation updates registered in the cleanup 
-				routine that extend the validity of a reservation."`,
+				Help: "Total number of reservation updates registered in the cleanup " +
+					"routine that extend the validity of a reservation.",
 			},
 			[]string{},
 		),

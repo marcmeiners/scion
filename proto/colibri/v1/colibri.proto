@@ -448,6 +448,7 @@ message AddAdmissionEntryResponse {
 }
 
 message ActiveIndicesRequest {
+    // the colibri gateway topology id
     string coligate_id = 1;
 }
 

@@ -15,6 +15,7 @@
 package storage
 
 import (
+	"crypto/cipher"
 	"time"
 
 	"github.com/scionproto/scion/go/coligate/tokenbucket"
@@ -22,10 +23,10 @@ import (
 )
 
 type Storage struct {
-	reservations map[string]*Reservation
+	reservations map[[12]byte]*Reservation
 }
 type Reservation struct {
-	Id             string
+	Id             [12]byte
 	Hops           []HopField
 	Rlc            uint8
 	ActiveIndexId  uint8
@@ -40,6 +41,7 @@ type ReservationIndex struct {
 	Index    uint8
 	Validity time.Time
 	Sigmas   [][]byte
+	Ciphers  []cipher.Block
 	BwCls    uint8
 }
 
@@ -60,7 +62,7 @@ type UpdateTask struct {
 }
 
 type DeletionTask struct {
-	ResId string
+	ResId [12]byte
 }
 
 // Execute merges (overwrites if exists in both) all provided reservation indices
@@ -92,28 +94,28 @@ func (res *Reservation) Current() *ReservationIndex {
 }
 
 // InitStorageWithData initializes the reservation storage
-func (store *Storage) InitStorageWithData(data map[string]*Reservation) {
+func (store *Storage) InitStorageWithData(data map[[12]byte]*Reservation) {
 	if data == nil {
-		store.reservations = make(map[string]*Reservation)
+		store.reservations = make(map[[12]byte]*Reservation)
 	} else {
 		store.reservations = data
 	}
 }
 
-func (store *Storage) get(resId string) (*Reservation, bool) {
+func (store *Storage) get(resId [12]byte) (*Reservation, bool) {
 	res, found := store.reservations[resId]
 	return res, found
 }
 
-func (store *Storage) store(resId string, reservation *Reservation) {
+func (store *Storage) store(resId [12]byte, reservation *Reservation) {
 	store.reservations[resId] = reservation
 }
 
-func (store *Storage) remove(resId string) {
+func (store *Storage) remove(resId [12]byte) {
 	delete(store.reservations, resId)
 }
 
-func NewReservation(resId string, hops []HopField) *Reservation {
+func NewReservation(resId [12]byte, hops []HopField) *Reservation {
 	return &Reservation{
 		Id:      resId,
 		Rlc:     0, //TODO(rohrerj)
@@ -135,7 +137,7 @@ func NewUpdateTask(res *Reservation, highestValidity time.Time) *UpdateTask {
 		HighestValidity: highestValidity,
 	}
 }
-func NewDeletionTask(resId string) *DeletionTask {
+func NewDeletionTask(resId [12]byte) *DeletionTask {
 	return &DeletionTask{
 		ResId: resId,
 	}
@@ -144,7 +146,7 @@ func NewDeletionTask(resId string) *DeletionTask {
 // UseReservation checks whether the reservation index exists and is valid. If the
 // reservation exists but contains no longer valid indices, they will be removed.
 // If the reservation index exists and is valid, the reservation is returned.
-func (store *Storage) UseReservation(resId string, providedIndex uint8,
+func (store *Storage) UseReservation(resId [12]byte, providedIndex uint8,
 	pktTime time.Time) (*Reservation, bool) {
 
 	log.Debug("use resId", "resId", resId)

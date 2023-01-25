@@ -20,6 +20,7 @@ import (
 	"net"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
 
 	base "github.com/scionproto/scion/go/co/reservation"
@@ -37,7 +38,6 @@ import (
 	"github.com/scionproto/scion/go/lib/slayers/path/empty"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/util"
-	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	gtepb "github.com/scionproto/scion/go/pkg/proto/coligate"
 )
@@ -46,7 +46,23 @@ type ColibriService struct {
 	Store reservationstorage.Store
 	// Map from border router interface id to the corresponding colibri gateway's
 	// grpc TCP address.
-	Coligates map[uint32]*net.TCPAddr
+	coligates map[uint32]*gtepb.ColibriGatewayServiceClient
+}
+
+// PrepareColibriGatewayServiceClients dials all colibri gateways per border router egress id
+// and stores the client connection in the ColibriService struct.
+func (s *ColibriService) PrepareColibriGatewayServiceClients(m *map[uint32]*net.TCPAddr) {
+	s.coligates = make(map[uint32]*gtepb.ColibriGatewayServiceClient)
+	for egressId, addr := range *m {
+		conn, err := grpc.Dial(addr.String(), grpc.WithInsecure())
+		if err != nil {
+			log.Info("error dialing the colibri gateway",
+				"address", addr, "err", err)
+			return
+		}
+		client := gtepb.NewColibriGatewayServiceClient(conn)
+		s.coligates[egressId] = &client
+	}
 }
 
 var _ colpb.ColibriServiceServer = (*ColibriService)(nil)
@@ -346,11 +362,12 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 			return nil, serrors.New("at least one hopfield is required")
 		}
 
+		// TODO(rohrerj) don't always create a new goroutine
 		// contact the colibri gateway to update the sigmas:
-		err = s.updateSigmas(path, token)
-		if err != nil {
-			return nil, err
-		}
+		go func(colPath *colpath.ColibriPath, token *reservation.Token) {
+			defer log.HandlePanic()
+			s.updateSigmas(path, token)
+		}(path, token)
 
 		rawPath := make([]byte, path.Len())
 		err = path.SerializeTo(rawPath)
@@ -445,7 +462,7 @@ func (s *ColibriService) ActiveIndices(ctx context.Context, req *colpb.ActiveInd
 }
 
 func (s *ColibriService) updateSigmas(colPath *colpath.ColibriPath,
-	token *reservation.Token) error {
+	token *reservation.Token) {
 
 	inf := colPath.InfoField
 	hopFields := make([]*gtepb.HopInterface, len(colPath.HopFields))
@@ -467,33 +484,17 @@ func (s *ColibriService) updateSigmas(colPath *colpath.ColibriPath,
 		Sigmas:         sigmas,
 	}
 
-	// Send the request to the colibri gateway that is responsible for that egress id
-	coligateAddr, found := s.Coligates[hopFields[0].Egressid]
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	client, found := s.coligates[hopFields[0].Egressid]
 	if !found {
-		return serrors.New(`"No Colibri Gateway found that is responsible for
-		egress id"`, "egressId", hopFields[0].Egressid)
+		log.Error("error updating sigmas at the colibri gateway, client not found")
+		cancel()
 	}
-	go func(address net.Addr) {
-		defer log.HandlePanic()
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		var connDialer libgrpc.SimpleDialer
-		conn, err := connDialer.Dial(ctx, address)
-		if err != nil {
-			log.Info("error dialing the colibri gateway",
-				"address", address)
-			return
-		}
-		client := gtepb.NewColibriGatewayServiceClient(conn)
-		res, err := client.UpdateSigmas(ctx, req)
-		if err != nil {
-			log.Info("error updating sigmas at the colibri gateway",
-				"address", address, "err", err)
-			return
-		}
-		_ = res // TODO(rohrerj) define what the response will be. Just empty?
-	}(coligateAddr)
-	return nil
+	_, err := (*client).UpdateSigmas(ctx, req)
+	if err != nil {
+		log.Error("error updating sigmas at the colibri gateway", "err", err)
+	}
+	cancel()
 }
 
 // checkLocalCaller prevents the service from doing anything if the caller is not from the local AS.

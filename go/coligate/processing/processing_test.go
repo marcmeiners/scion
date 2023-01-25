@@ -15,11 +15,14 @@
 package processing_test
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/gopacket"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/scionproto/scion/go/coligate/processing"
 	"github.com/scionproto/scion/go/coligate/storage"
@@ -52,9 +55,9 @@ func TestValidate(t *testing.T) {
 	type test struct {
 		name     string
 		entries  []entry
-		resStore map[string]*storage.Reservation
+		resStore map[[12]byte]*storage.Reservation
 	}
-	worker := processing.NewWorker(getColigateConfiguration(), 1, 1, 1)
+	worker := processing.NewWorker(getColigateConfiguration(), 1, 1, 1, nil, coligateMetrics)
 
 	var startTime = time.Unix(0, 0)
 
@@ -109,10 +112,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateReservationBelongsToOtherAS",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string(
-						[]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id:            reservationIdOne,
 					Hops:          make([]storage.HopField, 1),
 					ActiveIndexId: 0,
 					Indices: map[uint8]*storage.ReservationIndex{
@@ -128,10 +130,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 							},
 						},
 						ScionLayer: &slayers.SCION{
@@ -147,10 +150,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 							},
 						},
 						ScionLayer: &slayers.SCION{
@@ -163,10 +167,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateInvalidNumberOfHopfields",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string(
-						[]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id:            reservationIdOne,
 					Hops:          make([]storage.HopField, 1),
 					ActiveIndexId: 0,
 					Indices: map[uint8]*storage.ReservationIndex{
@@ -182,10 +185,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 							},
 						},
 						ScionLayer: &slayers.SCION{
@@ -198,10 +202,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateCurrHFIsInvalid",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string(
-						[]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id:            reservationIdOne,
 					Hops:          make([]storage.HopField, 1),
 					ActiveIndexId: 0,
 					Indices: map[uint8]*storage.ReservationIndex{
@@ -217,10 +220,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								CurrHF:      1,
 							},
 							HopFields: make([]*colibri.HopField, 1),
@@ -235,10 +239,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateBwClsIsInvalid",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string(
-						[]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id:            reservationIdOne,
 					Hops:          make([]storage.HopField, 1),
 					ActiveIndexId: 0,
 					Indices: map[uint8]*storage.ReservationIndex{
@@ -254,10 +257,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								CurrHF:      0,
 								BwCls:       2,
 							},
@@ -273,10 +277,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateRlcIsInvalid",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string(
-						[]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id:            reservationIdOne,
 					Hops:          make([]storage.HopField, 1),
 					ActiveIndexId: 0,
 					Indices: map[uint8]*storage.ReservationIndex{
@@ -293,10 +296,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								CurrHF:      0,
 								BwCls:       1,
 								Rlc:         2,
@@ -313,10 +317,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateExpTickIsInvalid",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string(
-						[]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id:            reservationIdOne,
 					Hops:          make([]storage.HopField, 1),
 					ActiveIndexId: 0,
 					Indices: map[uint8]*storage.ReservationIndex{
@@ -333,10 +336,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								CurrHF:      0,
 								BwCls:       1,
 								Rlc:         1,
@@ -354,9 +358,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateInvalidIngressId",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id: reservationIdOne,
 					Hops: []storage.HopField{
 						{
 							IngressId: 1,
@@ -378,10 +382,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								Ver:         0,
 								BwCls:       1,
 								Rlc:         1,
@@ -405,9 +410,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateInvalidEgressId",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id: reservationIdOne,
 					Hops: []storage.HopField{
 						{
 							IngressId: 1,
@@ -429,10 +434,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								Ver:         0,
 								BwCls:       1,
 								Rlc:         1,
@@ -456,9 +462,9 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name: "TestValidateAllValid",
-			resStore: map[string]*storage.Reservation{
-				string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}): {
-					Id: string([]byte{0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
+			resStore: map[[12]byte]*storage.Reservation{
+				reservationIdOne: {
+					Id: reservationIdOne,
 					Hops: []storage.HopField{
 						{
 							IngressId: 1,
@@ -480,10 +486,11 @@ func TestValidate(t *testing.T) {
 			entries: []entry{
 				{
 					proc: processing.DataPacket{
+						Id:             reservationIdOne,
 						PktArrivalTime: startTime,
 						ColibriPath: &colibri.ColibriPath{
 							InfoField: &colibri.InfoField{
-								ResIdSuffix: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+								ResIdSuffix: reservationIdOne[:],
 								Ver:         0,
 								BwCls:       1,
 								Rlc:         1,
@@ -511,7 +518,7 @@ func TestValidate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			worker.Storage.InitStorageWithData(tc.resStore)
 			for _, en := range tc.entries {
-				err := worker.Validate(&en.proc)
+				err := worker.Validate(en.proc.Convert())
 				if en.err == "" {
 					assert.NoError(t, err)
 				} else {
@@ -532,7 +539,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 		name    string
 		entries []entry
 	}
-	worker := processing.NewWorker(getColigateConfiguration(), 1, 1, 1)
+	worker := processing.NewWorker(getColigateConfiguration(), 1, 1, 1, nil, coligateMetrics)
 
 	var startTime = time.Unix(0, 0)
 
@@ -545,7 +552,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2000),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -563,7 +570,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 1),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -586,7 +593,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 500),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -604,7 +611,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 500),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -622,7 +629,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 500),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -640,7 +647,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 500),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -658,7 +665,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 1),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -681,7 +688,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2000),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -699,7 +706,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2000),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "B",
+							Id:            [12]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2},
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -722,7 +729,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2000),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -740,7 +747,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 1),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 1,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -768,7 +775,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2000),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -786,7 +793,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2750),
 						PktArrivalTime: startTime.Add(1 * time.Second),
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 1,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -814,7 +821,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2750),
 						PktArrivalTime: startTime,
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 0,
 							Indices: map[uint8]*storage.ReservationIndex{
 								0: {
@@ -832,7 +839,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 2000),
 						PktArrivalTime: startTime.Add(1 * time.Second),
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 1,
 							Indices: map[uint8]*storage.ReservationIndex{
 								1: {
@@ -850,7 +857,7 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 						RawPacket:      make([]byte, 1),
 						PktArrivalTime: startTime.Add(1 * time.Second),
 						Reservation: &storage.Reservation{
-							Id:            "A",
+							Id:            reservationIdOne,
 							ActiveIndexId: 1,
 							Indices: map[uint8]*storage.ReservationIndex{
 								1: {
@@ -869,11 +876,11 @@ func TestPerformTrafficMonitoring(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := make(map[string]*storage.TrafficMonitor)
+			m := make(map[[12]byte]*storage.TrafficMonitor)
 			for _, en := range tc.entries {
 				monitor := m[en.proc.Reservation.Id]
 				en.proc.Reservation.TrafficMonitor = monitor
-				err := worker.PerformTrafficMonitoring(&en.proc)
+				err := worker.PerformTrafficMonitoring(en.proc.Convert())
 				m[en.proc.Reservation.Id] = en.proc.Reservation.TrafficMonitor
 				assert.True(t, (err == nil && en.success) || (err != nil && !en.success))
 			}
@@ -886,7 +893,7 @@ func TestUpdateCounter(t *testing.T) {
 		NumBitsForGatewayId:        8,
 		NumBitsForWorkerId:         8,
 		NumBitsForPerWorkerCounter: 16,
-	}, 13, 3, 1)
+	}, 13, 3, 1, nil, coligateMetrics)
 	// Check that it starts with the correct value
 	assert.Equal(t, uint32(0x30d0000), w.CoreIdCounter)
 
@@ -914,7 +921,7 @@ func TestUpdateMacs(t *testing.T) {
 	privateKeyCipher, err := libcolibri.InitColibriKey(privateKey)
 	assert.NoError(t, err)
 
-	w := processing.NewWorker(getColigateConfiguration(), 1, 1, 1)
+	w := processing.NewWorker(getColigateConfiguration(), 1, 1, 1, nil, coligateMetrics)
 
 	d := &processing.DataPacket{
 		PktArrivalTime: time.Unix(0, 0),
@@ -946,7 +953,7 @@ func TestUpdateMacs(t *testing.T) {
 			PathType:    colibri.PathType,
 		},
 		Reservation: &storage.Reservation{
-			Id:            "A",
+			Id:            reservationIdOne,
 			ActiveIndexId: 0,
 			Hops: []storage.HopField{
 				{
@@ -970,7 +977,7 @@ func TestUpdateMacs(t *testing.T) {
 
 	// Update mac fields of EE data packet with wrong sigma
 	d.Reservation.Indices[0].Sigmas[0] = []byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
-	err = w.Stamp(d)
+	err = w.Stamp(d.Convert())
 	assert.NoError(t, err)
 	// Validate the computed mac
 	err = libcolibri.VerifyMAC(privateKeyCipher, d.ColibriPath.PacketTimestamp,
@@ -978,11 +985,465 @@ func TestUpdateMacs(t *testing.T) {
 	assert.Error(t, err)
 
 	// Update mac fields of EE data packet with correct sigma
-	d.Reservation.Indices[0].Sigmas[0] = sigmaBuffer
-	err = w.Stamp(d)
+	d.Reservation.Indices[0].Sigmas = [][]byte{
+		sigmaBuffer,
+	}
+	d.Reservation.Indices[0].Ciphers = nil
+	err = w.Stamp(d.Convert())
 	assert.NoError(t, err)
 	// Validate the computed mac
 	err = libcolibri.VerifyMAC(privateKeyCipher, d.ColibriPath.PacketTimestamp,
 		d.ColibriPath.InfoField, d.ColibriPath.HopFields[0], d.ScionLayer)
 	assert.NoError(t, err)
+}
+
+func BenchmarkParsing(b *testing.B) {
+	payloadLen := uint16(500)
+	s := &slayers.SCION{
+		SrcIA:      addr.MustIAFrom(1, 1),
+		DstIA:      addr.MustIAFrom(2, 2),
+		PayloadLen: payloadLen,
+		HdrLen:     27,
+		BaseLayer: slayers.BaseLayer{
+			Payload: make([]byte, payloadLen),
+		},
+		PathType: colibri.PathType,
+		Path: &colibri.ColibriPath{
+			InfoField: &colibri.InfoField{
+				ResIdSuffix: make([]byte, 12),
+				HFCount:     5,
+				OrigPayLen:  payloadLen,
+			},
+			HopFields: []*colibri.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       []byte{1, 2, 3, 4},
+				},
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       []byte{1, 2, 3, 4},
+				},
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       []byte{1, 2, 3, 4},
+				},
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       []byte{1, 2, 3, 4},
+				},
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       []byte{1, 2, 3, 4},
+				},
+			},
+		},
+	}
+	buffer := gopacket.NewSerializeBuffer()
+	err := s.SerializeTo(buffer, gopacket.SerializeOptions{})
+	assert.NoError(b, err)
+	payload := make([]byte, payloadLen)
+	bytes := []byte{}
+	bytes = append(bytes, buffer.Bytes()...)
+	bytes = append(bytes, payload...)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := processing.Parse(bytes)
+		assert.NoError(b, err)
+	}
+}
+
+func BenchmarkProcess(b *testing.B) {
+	errGroup := &errgroup.Group{}
+	c := &processing.Processor{}
+	borderRouterAddr, err := net.ResolveUDPAddr("udp", "localhost:30000")
+	if err != nil {
+		b.Error(err)
+	}
+	c.SetupPacketForwarder(errGroup, map[uint16]*net.UDPAddr{
+		2: borderRouterAddr,
+	}, coligateMetrics)
+
+	w := processing.NewWorker(getColigateConfiguration(), 1, 1, addr.MustIAFrom(1, 1).AS(),
+		c.GetPacketForwarderContainers(), coligateMetrics)
+	now := time.Now()
+	resStore := map[[12]byte]*storage.Reservation{
+		reservationIdOne: {
+			Id: reservationIdOne,
+			Indices: map[uint8]*storage.ReservationIndex{
+				1: {
+					Index:    0,
+					Validity: now.Add(12 * time.Second),
+					Sigmas: [][]byte{
+						{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+						{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1},
+						{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2},
+						{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3},
+						{5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4},
+						{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5},
+					},
+					BwCls: 60,
+				},
+			},
+			Hops: []storage.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+				},
+				{
+					IngressId: 3,
+					EgressId:  4,
+				},
+				{
+					IngressId: 5,
+					EgressId:  6,
+				},
+				{
+					IngressId: 7,
+					EgressId:  8,
+				},
+				{
+					IngressId: 9,
+					EgressId:  10,
+				},
+				{
+					IngressId: 11,
+					EgressId:  12,
+				},
+			},
+		},
+	}
+	w.Storage.InitStorageWithData(resStore)
+	defaultPkt := &processing.DataPacket{
+		Id:             reservationIdOne,
+		PktArrivalTime: time.Now(),
+		ScionLayer: &slayers.SCION{
+			PathType: 4,
+			SrcIA:    addr.MustIAFrom(1, 1),
+		},
+		ColibriPath: &colibri.ColibriPath{
+			InfoField: &colibri.InfoField{
+				Ver:         1,
+				ResIdSuffix: reservationIdOne[:],
+				BwCls:       60,
+				ExpTick:     uint32(now.Add(12*time.Second).Unix() / 4),
+			},
+			HopFields: []*colibri.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 3,
+					EgressId:  4,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 5,
+					EgressId:  6,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 7,
+					EgressId:  8,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 9,
+					EgressId:  10,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 11,
+					EgressId:  12,
+					Mac:       make([]byte, 4),
+				},
+			},
+		},
+		RawPacket: make([]byte, 400),
+	}
+	server, err := net.ListenUDP("udp", borderRouterAddr)
+	if err != nil {
+		b.Log(err)
+		b.FailNow()
+	}
+	defer server.Close()
+	time.Sleep(1 * time.Millisecond)
+	pkt := defaultPkt.Convert()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		assert.NoError(b, w.Process(pkt))
+	}
+	c.StopPacketForwarder()
+	errGroup.Wait()
+}
+
+func BenchmarkValidate(b *testing.B) {
+	w := processing.NewWorker(getColigateConfiguration(), 1, 1, 1, nil, coligateMetrics)
+	now := time.Now()
+
+	resStore := map[[12]byte]*storage.Reservation{
+		reservationIdOne: {
+			Id: reservationIdOne,
+			Hops: []storage.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+				},
+			},
+			ActiveIndexId: 0,
+			Rlc:           1,
+			Indices: map[uint8]*storage.ReservationIndex{
+				0: {
+					Index:    0,
+					Validity: now.Add(16 * time.Second),
+					BwCls:    1,
+					Sigmas:   make([][]byte, 1),
+				},
+			},
+		},
+	}
+	w.Storage.InitStorageWithData(resStore)
+	d := &processing.DataPacket{
+		Id:             reservationIdOne,
+		PktArrivalTime: now,
+		ColibriPath: &colibri.ColibriPath{
+			InfoField: &colibri.InfoField{
+				ResIdSuffix: reservationIdOne[:],
+				Ver:         0,
+				BwCls:       1,
+				Rlc:         1,
+				HFCount:     1,
+				ExpTick:     uint32(now.Add(16*time.Second).Unix() / 4),
+			},
+			HopFields: []*colibri.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+				},
+			},
+		},
+		ScionLayer: &slayers.SCION{
+			SrcIA: addr.MustIAFrom(1, 1),
+		},
+	}
+	pkt := d.Convert()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		assert.NoError(b, w.Validate(pkt))
+	}
+}
+
+func BenchmarkTrafficMonitoring(b *testing.B) {
+	w := processing.NewWorker(getColigateConfiguration(), 1, 1, 1, nil, coligateMetrics)
+	now := time.Now()
+	d := &processing.DataPacket{
+		Id:             reservationIdOne,
+		PktArrivalTime: now,
+		Reservation: &storage.Reservation{
+			Id:            reservationIdOne,
+			ActiveIndexId: 0,
+			Indices: map[uint8]*storage.ReservationIndex{
+				0: {
+					Index:    0,
+					Validity: now.Add(12 * time.Second),
+					BwCls:    40,
+				},
+			},
+		},
+	}
+	pkt := d.Convert()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		assert.NoError(b, w.PerformTrafficMonitoring(pkt))
+	}
+}
+
+func BenchmarkStamp(b *testing.B) {
+	w := processing.NewWorker(getColigateConfiguration(), 1, 1, 1, nil, coligateMetrics)
+	now := time.Now()
+	defaultPkt := &processing.DataPacket{
+		Id:             reservationIdOne,
+		PktArrivalTime: now,
+		ScionLayer: &slayers.SCION{
+			PathType: colibri.PathType,
+			SrcIA:    addr.MustIAFrom(1, 1),
+		},
+		ColibriPath: &colibri.ColibriPath{
+			InfoField: &colibri.InfoField{
+				Ver:         1,
+				ResIdSuffix: reservationIdOne[:],
+				BwCls:       1,
+				ExpTick:     uint32(now.Add(12*time.Second).Unix() / 4),
+				HFCount:     5,
+			},
+			HopFields: []*colibri.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 3,
+					EgressId:  4,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 5,
+					EgressId:  6,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 7,
+					EgressId:  8,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 9,
+					EgressId:  10,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 11,
+					EgressId:  12,
+					Mac:       make([]byte, 4),
+				},
+			},
+		},
+		RawPacket: make([]byte, 400),
+		Reservation: &storage.Reservation{
+			Id: reservationIdOne,
+			Hops: []storage.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+				},
+				{
+					IngressId: 3,
+					EgressId:  4,
+				},
+				{
+					IngressId: 5,
+					EgressId:  6,
+				},
+				{
+					IngressId: 7,
+					EgressId:  8,
+				},
+				{
+					IngressId: 9,
+					EgressId:  10,
+				},
+				{
+					IngressId: 11,
+					EgressId:  12,
+				},
+			},
+			ActiveIndexId: 0,
+			Rlc:           1,
+			Indices: map[uint8]*storage.ReservationIndex{
+				0: {
+					Index:    0,
+					Validity: now.Add(12 * time.Second),
+					BwCls:    1,
+					Sigmas: [][]byte{
+						{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+						{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1},
+						{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2},
+						{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3},
+						{5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4},
+						{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5},
+					},
+				},
+			},
+		},
+	}
+	pkt := defaultPkt.Convert()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.Stamp(pkt)
+	}
+}
+
+func BenchmarkForwardPacket(b *testing.B) {
+	errGroup := &errgroup.Group{}
+	c := &processing.Processor{}
+	borderRouterAddr, err := net.ResolveUDPAddr("udp", "localhost:30000")
+	if err != nil {
+		b.Error(err)
+	}
+	c.SetupPacketForwarder(errGroup, map[uint16]*net.UDPAddr{
+		2: borderRouterAddr,
+	}, coligateMetrics)
+	w := processing.NewWorker(getColigateConfiguration(), 1, 1, 1,
+		c.GetPacketForwarderContainers(), coligateMetrics)
+	now := time.Now()
+	defaultPkt := &processing.DataPacket{
+		Id:             reservationIdOne,
+		PktArrivalTime: time.Now(),
+		ScionLayer: &slayers.SCION{
+			PathType: 4,
+			SrcIA:    addr.MustIAFrom(1, 1),
+		},
+		ColibriPath: &colibri.ColibriPath{
+			InfoField: &colibri.InfoField{
+				Ver:         1,
+				ResIdSuffix: reservationIdOne[:],
+				BwCls:       60,
+				ExpTick:     uint32(now.Add(12*time.Second).Unix() / 4),
+			},
+			HopFields: []*colibri.HopField{
+				{
+					IngressId: 1,
+					EgressId:  2,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 3,
+					EgressId:  4,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 5,
+					EgressId:  6,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 7,
+					EgressId:  8,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 9,
+					EgressId:  10,
+					Mac:       make([]byte, 4),
+				},
+				{
+					IngressId: 11,
+					EgressId:  12,
+					Mac:       make([]byte, 4),
+				},
+			},
+		},
+		RawPacket: make([]byte, 400),
+	}
+
+	server, err := net.ListenUDP("udp", borderRouterAddr)
+	if err != nil {
+		b.Log(err)
+		b.FailNow()
+	}
+	defer server.Close()
+	pkt := defaultPkt.Convert()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.ForwardPacket(pkt)
+	}
+	c.StopPacketForwarder()
+	errGroup.Wait()
 }

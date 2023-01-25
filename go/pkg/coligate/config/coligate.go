@@ -29,12 +29,19 @@ type ColigateConfig struct {
 	NumBitsForPerWorkerCounter int `toml:"NumBitsForPerWorkerCounter"`
 
 	//Timeout in sec
-	COSyncTimeout         int    `toml:"COSyncTimeout"`
-	ColibriGatewayID      int    `toml:"ColibriGatewayID"`
-	NumWorkers            int    `toml:"NumWorkers"`
-	MaxQueueSizePerWorker int    `toml:"MaxQueueSizePerWorker"`
-	Salt                  string `toml:"Salt"`
-	ColigateGRPCAddr      string `toml:"ColigateGRPCAddr"`
+	COSyncTimeout         int               `toml:"COSyncTimeout"`
+	ColibriGatewayID      int               `toml:"ColibriGatewayID"`
+	NumWorkers            int               `toml:"NumWorkers"`
+	MaxQueueSizePerWorker int               `toml:"MaxQueueSizePerWorker"`
+	Salt                  string            `toml:"Salt"`
+	ColigateGRPCAddr      string            `toml:"ColigateGRPCAddr"`
+	Forwarder             []ForwarderConfig `toml:"Forwarder"`
+}
+
+type ForwarderConfig struct {
+	InterfaceId int `toml:"InterfaceId"`
+	BatchSize   int `toml:"BatchSize"`
+	Count       int `toml:"Count"`
 }
 
 func (cfg *ColigateConfig) Validate() error {
@@ -51,6 +58,11 @@ func (cfg *ColigateConfig) Validate() error {
 	if int(math.Pow(2, float64(cfg.NumBitsForWorkerId))-1) < cfg.NumWorkers {
 		return serrors.New("Too small bit count for too many workers", "NumBitsForWorkerId",
 			cfg.NumBitsForWorkerId, "NumWorkers", cfg.NumWorkers)
+	}
+	for _, fw := range cfg.Forwarder {
+		if fw.BatchSize < 1 {
+			return serrors.New("ForwarderBatchSize < 1")
+		}
 	}
 	return nil
 }
@@ -74,6 +86,14 @@ func (cfg *ColigateConfig) InitDefaults() {
 	}
 	if cfg.COSyncTimeout == 0 {
 		cfg.COSyncTimeout = 10
+	}
+	for _, fw := range cfg.Forwarder {
+		if fw.BatchSize == 0 {
+			fw.BatchSize = 16
+		}
+		if fw.Count == 0 {
+			fw.Count = 1
+		}
 	}
 }
 
