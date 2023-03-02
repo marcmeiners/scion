@@ -64,18 +64,24 @@ class TopoGenArgs(ArgsBase):
     def __init__(self,
                  args: ArgsBase,
                  topo_config,
+                 intra_config,
+                 intra_topo_dicts: dict,
                  subnet_gen4: SubnetGenerator,
                  subnet_gen6: SubnetGenerator,
                  default_mtu: int):
         """
         :param ArgsBase args: Contains the passed command line arguments.
         :param dict topo_config: The parsed topology config.
+        :param dict intra_config: The parsed intra-AS config file.
+        :param dict intra_topo_dicts: The parsed intra-AS topology file.
         :param SubnetGenerator subnet_gen4: The default network generator for IPv4.
         :param SubnetGenerator subnet_gen6: The default network generator for IPv6.
         :param dict default_mtu: The default mtu.
         """
         super().__init__(args)
         self.topo_config_dict = topo_config
+        self.intra_config_dict = intra_config
+        self.intra_topo_dicts = intra_topo_dicts
         self.subnet_gen = {
             ADDR_TYPE_4: subnet_gen4,
             ADDR_TYPE_6: subnet_gen6,
@@ -96,6 +102,8 @@ class TopoGenerator(object):
         self.as_list = defaultdict(list)
         self.links = defaultdict(list)
         self.ifid_map = {}
+        self.BR_internal_addr = defaultdict(dict)
+        self.BR_names = defaultdict(dict)
 
     def _reg_addr(self, topo_id: TopoID, elem_id, addr_type):
         subnet = self.args.subnet_gen[addr_type].register(str(topo_id))
@@ -125,7 +133,10 @@ class TopoGenerator(object):
         self._read_links()
         # in a first step we allocate all networks, so that we can later use
         # the IPs in the generate functions.
-        self._iterate(self._register_addrs)
+        if self.args.intra_config is not None:
+            self._iterate(self._register_intra_addrs)
+        else:
+            self._iterate(self._register_addrs)
         networks = {}
         for k, v in self.args.subnet_gen[ADDR_TYPE_4].alloc_subnets().items():
             networks[k] = v
@@ -137,6 +148,75 @@ class TopoGenerator(object):
         self._write_as_list()
         self._write_ifids()
         return self.topo_dicts, networks
+
+    def get_internal_BR_name(self, topo_id, br):
+        # use BR_names to get the original string/name of the borderrouter
+        for external_name, br_name in self.BR_names[str(topo_id)].items():
+            if br == br_name:
+                ext_name_no_itf = external_name.split('#')[0]
+                nr_splits = ext_name_no_itf.split('-')
+                if len(nr_splits) == 3:
+                    # specific ID is given
+                    # don't save interface, because this BR will have multiple interfaces
+                    ext_br_a = ext_name_no_itf
+                else:
+                    # no specific ID is given, save interface
+                    ext_br_a = external_name
+                break
+        # now we have original strings of the BR
+        # extract interanl name via the intra-config
+        borderrouter_dict = self.args.intra_config_dict['ASes'][str(topo_id)]['Borderrouter']
+        for internal_name, br_name in borderrouter_dict.items():
+            if ext_br_a == br_name:
+                return internal_name
+
+        raise ValueError(f"Could not find internal borderrouter name for {br}")
+
+    def get_nick_intra(self, node, intra_nodes_dict):
+        if node in intra_nodes_dict['Colibri']:
+            return 'co'
+        if node in intra_nodes_dict['Control-Service']:
+            return 'cs'
+        if node in intra_nodes_dict['SCION-Daemon']:
+            return 'sd'
+        if node in intra_nodes_dict['Borderrouter']:
+            return 'br'
+        if node in intra_nodes_dict['Client']:
+            return 'cl'
+        return 'r'
+
+    def _register_intra_addrs(self, topo_id, as_conf):
+        intra_topo_file = self.args.intra_topo_dicts[str(topo_id)]
+        intra_nodes_dict = intra_topo_file['Nodes']
+        intra_links = intra_topo_file['links']
+        addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
+
+        seen = defaultdict(int)
+
+        for link in intra_links:
+            a = link['a']
+            nick_a = self.get_nick_intra(a, intra_nodes_dict)
+            b = link['b']
+            nick_b = self.get_nick_intra(b, intra_nodes_dict)
+            seen[a] += 1
+            seen[b] += 1
+            a_id = "%s%s-%s-@%s" % (nick_a, topo_id.file_fmt(), seen[a], a)
+            b_id = "%s%s-%s-@%s" % (nick_b, topo_id.file_fmt(), seen[b], b)
+
+            self._reg_link_addrs(a_id, b_id, seen[a], seen[b], addr_type)
+            if not self.args.docker:
+                self.args.port_gen.register(a_id)
+                self.args.port_gen.register(b_id)
+
+        # register the border routers
+        for (linkto, remote, attrs, l_br, r_br, l_ifid, r_ifid) in self.links[topo_id]:
+            internal_br_a = self.get_internal_BR_name(topo_id, l_br)
+            internal_br_b = self.get_internal_BR_name(remote, r_br)
+            link_addr_type = addr_type_from_underlay(attrs.get('underlay', DEFAULT_UNDERLAY))
+            a_id = "%s-@%s" % (l_br, internal_br_a)
+            b_id = "%s-@%s" % (r_br, internal_br_b)
+
+            self._reg_link_addrs(a_id, b_id, l_ifid, r_ifid, link_addr_type)
 
     def _register_addrs(self, topo_id, as_conf):
         self._register_srv_entries(topo_id, as_conf)
@@ -214,6 +294,8 @@ class TopoGenerator(object):
         if not self.args.topo_config_dict.get("links", None):
             return
         for attrs in self.args.topo_config_dict["links"]:
+            initial_a = attrs['a']
+            initial_b = attrs['b']
             a = LinkEP(attrs.pop("a"))
             b = LinkEP(attrs.pop("b"))
             linkto = linkto_a = linkto_b = attrs.pop("linkAtoB")
@@ -230,6 +312,8 @@ class TopoGenerator(object):
             self.ifid_map[str(a)][a_desc] = b_desc
             self.ifid_map.setdefault(str(b), {})
             self.ifid_map[str(b)][b_desc] = a_desc
+            self.BR_names[str(a)][initial_a] = a_br
+            self.BR_names[str(b)][initial_b] = b_br
 
     def _generate_as_topo(self, topo_id, as_conf):
         mtu = as_conf.get('mtu', self.args.default_mtu)
@@ -245,11 +329,91 @@ class TopoGenerator(object):
         }
         for i in SCION_SERVICE_NAMES:
             self.topo_dicts[topo_id][i] = {}
-        self._gen_srv_entries(topo_id, as_conf)
-        self._gen_br_entries(topo_id, as_conf)
-        if self.args.sig:
-            self.topo_dicts[topo_id]['sigs'] = {}
-            self._gen_sig_entries(topo_id, as_conf)
+
+        if self.args.intra_config is not None:
+            self._gen_intra_entries(topo_id, as_conf)
+        else:
+            self._gen_srv_entries(topo_id, as_conf)
+            self._gen_br_entries(topo_id, as_conf)
+            if self.args.sig:
+                self.topo_dicts[topo_id]['sigs'] = {}
+                self._gen_sig_entries(topo_id, as_conf)
+
+    def _gen_intra_srvs(self, port, elem_id, topo_id, topo_key, ip):
+        if not self.args.docker:
+            port = self.args.port_gen.register(elem_id)
+
+        d = {
+            'addr': join_host_port(ip, port),
+        }
+        self.topo_dicts[topo_id][topo_key][elem_id] = d
+
+    def _gen_intra_entry(self, link, intra_nodes_dict, seen, borderrouters, addr_type, topo_id):
+        a = link['a']
+        nick_a = self.get_nick_intra(a, intra_nodes_dict)
+        b = link['b']
+        nick_b = self.get_nick_intra(b, intra_nodes_dict)
+        seen[a] += 1
+        seen[b] += 1
+        a_id = "%s%s-%s-@%s" % (nick_a, topo_id.file_fmt(), seen[a], a)
+        b_id = "%s%s-%s-@%s" % (nick_b, topo_id.file_fmt(), seen[b], b)
+
+        addr_a, addr_b = self._reg_link_addrs(a_id, b_id, seen[a], seen[b], addr_type)
+
+        for node, ID, ip in [(a, a_id, addr_a.ip), (b, b_id, addr_b.ip)]:
+            if node in intra_nodes_dict['Colibri']:
+                port = self._default_ctrl_port('co')
+                self._gen_intra_srvs(port, ID, topo_id, "colibri_service", ip)
+
+            if node in intra_nodes_dict['Control-Service']:
+                port = self._default_ctrl_port('cs')
+                self._gen_intra_srvs(port, ID, topo_id, "control_service", ip)
+                self._gen_intra_srvs(port, ID, topo_id, "discovery_service", ip)
+
+            if node in intra_nodes_dict['Borderrouter']:
+                self.BR_internal_addr[topo_id][node] = ip
+
+    def _gen_intra_br_entry(self, remote_type, remote, attrs, l_br, r_br, l_ifid, r_ifid, topo_id):
+        internal_br_a = self.get_internal_BR_name(topo_id, l_br)
+        internal_addr_a = self.BR_internal_addr[topo_id][internal_br_a]
+        internal_br_b = self.get_internal_BR_name(remote, r_br)
+        # encode internal name into id
+        a_id = "%s-@%s" % (l_br, internal_br_a)
+        b_id = "%s-@%s" % (r_br, internal_br_b)
+        link_addr_type = addr_type_from_underlay(attrs.get('underlay', DEFAULT_UNDERLAY))
+        public_addr, remote_addr = self._reg_link_addrs(
+            a_id, b_id, l_ifid, r_ifid, link_addr_type)
+
+        if self.topo_dicts[topo_id]["border_routers"].get(a_id) is None:
+            intl_port = 30042
+            if not self.args.docker:
+                intl_port = self.args.port_gen.register(a_id)
+
+            self.topo_dicts[topo_id]["border_routers"][a_id] = {
+                'internal_addr': join_host_port(internal_addr_a, intl_port),
+                'interfaces': {
+                    l_ifid: self._gen_br_intf(remote, public_addr, remote_addr, attrs, remote_type)
+                }
+            }
+        else:
+            # There is already a BR entry, add interface
+            intf = self._gen_br_intf(remote, public_addr, remote_addr, attrs, remote_type)
+            self.topo_dicts[topo_id]["border_routers"][a_id]['interfaces'][l_ifid] = intf
+
+    def _gen_intra_entries(self, topo_id, as_conf):
+        intra_topo_file = self.args.intra_topo_dicts[str(topo_id)]
+        intra_nodes_dict = intra_topo_file['Nodes']
+        addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
+
+        seen = defaultdict(int)
+        borderrouters = {}
+
+        for link in intra_topo_file['links']:
+            self._gen_intra_entry(link, intra_nodes_dict, seen, borderrouters, addr_type, topo_id)
+
+        for (remote_type, remote, attrs, l_br, r_br, l_ifid, r_ifid) in self.links[topo_id]:
+            self._gen_intra_br_entry(remote_type, remote, attrs,
+                                     l_br, r_br, l_ifid, r_ifid, topo_id)
 
     def _gen_srv_entries(self, topo_id, as_conf):
         srvs = [("control_servers", DEFAULT_CONTROL_SERVERS, "cs", "control_service")]
@@ -317,7 +481,18 @@ class TopoGenerator(object):
             intf = self._gen_br_intf(remote, public_addr, remote_addr, attrs, remote_type)
             self.topo_dicts[local]["border_routers"][local_br]['interfaces'][l_ifid] = intf
 
+    def _fill_dict(self, opt_dict, attrs, attribute):
+        if attrs.get(attribute, None) is not None:
+            opt_dict[attribute] = attrs[attribute]
+        return opt_dict
+
     def _gen_br_intf(self, remote, public_addr, remote_addr, attrs, remote_type):
+        optional_attrs = {}
+        optional_attrs = self._fill_dict(optional_attrs, attrs, 'bw')
+        optional_attrs = self._fill_dict(optional_attrs, attrs, 'delay')
+        optional_attrs = self._fill_dict(optional_attrs, attrs, 'loss')
+        optional_attrs = self._fill_dict(optional_attrs, attrs, 'jitter')
+
         return {
             'underlay': {
                 'public': join_host_port(public_addr.ip, SCION_ROUTER_PORT),
@@ -325,7 +500,8 @@ class TopoGenerator(object):
             },
             'isd_as': str(remote),
             'link_to': LinkType.to_str(remote_type.lower()),
-            'mtu': attrs.get('mtu', self.args.default_mtu)
+            'mtu': attrs.get('mtu', self.args.default_mtu),
+            **optional_attrs
         }
 
     def _gen_sig_entries(self, topo_id, as_conf):

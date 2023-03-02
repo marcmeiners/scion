@@ -82,6 +82,9 @@ type General struct {
 	// ReconnectToDispatcher can be set to true to enable transparent dispatcher
 	// reconnects.
 	ReconnectToDispatcher bool `toml:"reconnect_to_dispatcher,omitempty"`
+	// DispatcherSocket contains the path to the dispatcher's socket
+	// if left empty it will take the default socket "/run/shm/dispatcher/default.sock"
+	DispatcherSocket string `toml:"dispatcher_socket,omitempty"`
 }
 
 // InitDefaults sets the default value for Topology if not already set.

@@ -1,0 +1,71 @@
+---
+Nodes:
+  Colibri: 
+    - co1
+  Control-Service:
+    - cs1
+  SCION-Daemon:
+    - sd1
+  Borderrouter:
+    - br1
+    - br2
+    - br3
+    - br4
+    - br5
+    - br6
+    - br7
+    - br8
+    - br9
+    - br10
+  Client:
+    - cl1
+  Internal-Router:
+    - r1
+    - r2
+    - r3
+    - r4
+    - r5
+    - r6
+    - r7
+    - r8
+    - r9
+    - r10
+    - r11
+    - r12
+    - r13
+    - r14
+
+
+links:
+  - {a: "co1", b: "r1"}
+  - {a: "cs1", b: "r2"}
+  - {a: "sd1", b: "r3"}
+  - {a: "cl1", b: "r4"}
+  - {a: "br1", b: "r5"}
+  - {a: "br2", b: "r6"}
+  - {a: "br3", b: "r7"}
+  - {a: "br4", b: "r8"}
+  - {a: "br5", b: "r9"}
+  - {a: "br6", b: "r10"}
+  - {a: "br7", b: "r11"}
+  - {a: "br8", b: "r12"}
+  - {a: "br9", b: "r13"}
+  - {a: "br10", b: "r14"}
+  - {a: "r1", b: "r2"}
+  - {a: "r2", b: "r3"}
+  - {a: "r3", b: "r4"}
+  - {a: "r4", b: "r5"}
+  - {a: "r5", b: "r6"}
+  - {a: "r6", b: "r7"}
+  - {a: "r7", b: "r8"}
+  - {a: "r8", b: "r9"}
+  - {a: "r9", b: "r10"}
+  - {a: "r10", b: "r11"}
+  - {a: "r11", b: "r12"}
+  - {a: "r12", b: "r13"}
+  - {a: "r13", b: "r14"}
+  - {a: "r14", b: "r1"}
+
+
+
+

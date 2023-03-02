@@ -1,0 +1,14 @@
+load("@pip3_deps//:requirements.bzl", "requirement")
+load("//lint:py.bzl", "py_binary", "py_library")
+
+package(default_visibility = ["//visibility:public"])
+
+py_library(
+    name = "py_default_library",
+    srcs = glob(["**/*.py"]),
+    deps = [
+        "//python/lib:defines",
+        "//python/lib:util",
+        "//python/topology/supervisor",
+    ],
+)

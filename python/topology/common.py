@@ -119,7 +119,7 @@ def sciond_ip(docker, topo_id, networks: Mapping[IPNetwork,
                                                  NetworkDescription]):
     for net_desc in networks.values():
         for prog, ip_net in net_desc.ip_net.items():
-            if prog == 'sd%s' % topo_id.file_fmt():
+            if '-'.join(prog.split('-')[0:2]) == 'sd%s' % topo_id.file_fmt():
                 return ip_net.ip
     return None
 

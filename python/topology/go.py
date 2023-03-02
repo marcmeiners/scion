@@ -100,7 +100,8 @@ class GoGenerator(object):
             ca = 'issuing' in topo.get("attributes", [])
             for elem_id, elem in topo.get("control_service", {}).items():
                 # only a single Go-BS per AS is currently supported
-                if elem_id.endswith("-1"):
+                temp_elem_id = '-'.join(elem_id.split('-')[0:3])
+                if temp_elem_id.endswith("-1"):
                     base = topo_id.base_dir(self.args.output_dir)
                     bs_conf = self._build_control_service_conf(
                         topo_id, topo["isd_as"], base, elem_id, elem, ca)
@@ -150,7 +151,8 @@ class GoGenerator(object):
         for topo_id, topo in self.args.topo_dicts.items():
             for elem_id, elem in topo.get("colibri_service", {}).items():
                 # only a single Go-CO per AS is currently supported
-                if elem_id.endswith("-1"):
+                temp_elem_id = '-'.join(elem_id.split('-')[0:3])
+                if temp_elem_id.endswith("-1"):
                     base = topo_id.base_dir(self.args.output_dir)
                     co_conf = self._build_co_conf(topo_id, topo["isd_as"], base, elem_id, elem)
                     write_file(os.path.join(base, "%s.toml" % elem_id), toml.dumps(co_conf))

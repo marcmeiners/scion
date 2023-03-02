@@ -84,7 +84,8 @@ class SupervisorGenerator(object):
         entries = []
         for k, v in topo.get("control_service", {}).items():
             # only a single control service instance per AS is currently supported
-            if k.endswith("-1"):
+            temp_k = '-'.join(k.split('-')[0:3])
+            if temp_k.endswith("-1"):
                 conf = os.path.join(base, "%s.toml" % k)
                 prog = self._common_entry(k, ["bin/cs", "--config", conf])
                 entries.append((k, prog))
@@ -93,7 +94,8 @@ class SupervisorGenerator(object):
     def _colibri_service_entries(self, topo, base):
         entries = []
         for k, v in topo.get("colibri_service", {}).items():
-            if k.endswith("-1"):
+            temp_k = '-'.join(k.split('-')[0:3])
+            if temp_k.endswith("-1"):
                 conf = os.path.join(base, "%s.toml" % k)
                 prog = self._common_entry(k, ["bin/co", "--config", conf])
                 entries.append((k, prog))

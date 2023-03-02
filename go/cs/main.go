@@ -167,6 +167,7 @@ func realMain(ctx context.Context) error {
 		IA:                    topo.IA(),
 		Public:                topo.ControlServiceAddress(globalCfg.General.ID),
 		ReconnectToDispatcher: globalCfg.General.ReconnectToDispatcher,
+		DispatcherSocket:      globalCfg.General.DispatcherSocket,
 		QUIC: infraenv.QUIC{
 			Address: globalCfg.QUIC.Address,
 		},

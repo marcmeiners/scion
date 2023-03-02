@@ -62,6 +62,9 @@ type NetworkConfig struct {
 	// the dispatcher closes the connection (e.g., if the dispatcher goes
 	// down).
 	ReconnectToDispatcher bool
+	// DispatcherSocket contains the path to the dispatcher's socket
+	// if left empty it takes the default socket "/run/shm/dispatcher/default.sock"
+	DispatcherSocket string
 	// QUIC contains configuration details for QUIC servers. If the listening
 	// address is the empty string, then no QUIC socket is opened.
 	QUIC QUIC
@@ -209,7 +212,7 @@ func (nc *NetworkConfig) AddressRewriter(
 
 	if connFactory == nil {
 		connFactory = &snet.DefaultPacketDispatcherService{
-			Dispatcher:  reliable.NewDispatcher(""),
+			Dispatcher:  reliable.NewDispatcher(nc.DispatcherSocket),
 			SCMPHandler: nc.SCMPHandler,
 		}
 	}
@@ -241,7 +244,7 @@ func (nc *NetworkConfig) initSvcRedirect(quicAddress string, tlsQUICAdress strin
 		return nil, serrors.WrapStr("building SVC resolution reply", err)
 	}
 
-	dispatcherService := reliable.NewDispatcher("")
+	dispatcherService := reliable.NewDispatcher(nc.DispatcherSocket)
 	if nc.ReconnectToDispatcher {
 		dispatcherService = reconnect.NewDispatcherService(dispatcherService)
 	}
@@ -283,7 +286,7 @@ func (nc *NetworkConfig) initSvcRedirect(quicAddress string, tlsQUICAdress strin
 }
 
 func (nc *NetworkConfig) initQUICSockets(ignorePort bool) (net.PacketConn, net.PacketConn, error) {
-	dispatcherService := reliable.NewDispatcher("")
+	dispatcherService := reliable.NewDispatcher(nc.DispatcherSocket)
 	if nc.ReconnectToDispatcher {
 		dispatcherService = reconnect.NewDispatcherService(dispatcherService)
 	}

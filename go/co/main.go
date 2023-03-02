@@ -121,7 +121,8 @@ func setupNetwork(ctx context.Context, cfg *config.Config, topo *topology.Loader
 		Host: topo.ColibriServiceAddress(cfg.General.ID),
 	}
 
-	stack, err := coliquic.NewServerStack(ctx, serverAddr, cfg.Daemon.Address)
+	stack, err := coliquic.NewServerStack(
+		ctx, serverAddr, cfg.Daemon.Address, cfg.General.DispatcherSocket)
 	if err != nil {
 		return nil, serrors.WrapStr("initializing server stack", err)
 	}
