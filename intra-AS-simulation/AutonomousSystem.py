@@ -7,6 +7,7 @@ from mininet.node import UserSwitch, Node
 from mininet.net import Mininet
 from mininet.link import TCULink
 from routing_protocols import OSPF
+from routing_protocols import ISIS
 from mininet.topo import Topo
 
 from python.topology.supervisor import (
@@ -48,7 +49,9 @@ class MininetWithControlNet(Mininet):
 
 
 class Intra_AS_Topo(Topo):
-    """Class containing the topology of the AS."""
+    """Class containing the topology of the AS.
+    Extends the Topo class from Mininet!
+    """
 
     def get_addresses(self, node_a, node_b, SUBNETS, config):
         """Helper function: Get the addresses for the links between the nodes."""
@@ -209,6 +212,9 @@ class AutonomousSystem(object):
 
         if self.routing_protocol_name == 'OSPF':
             self.protocol = OSPF(self)
+        
+        if self.routing_protocol_name == 'IS-IS':
+            self.protocol = ISIS(self)
 
         self.protocol.start()
 

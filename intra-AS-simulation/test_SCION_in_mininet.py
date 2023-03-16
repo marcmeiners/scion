@@ -51,6 +51,7 @@ def test_SCION_ping(ASes, AS):
     sciond_addresses = get_sciond_addresses(AS)
     nodes = ASes[ISD_AS_id]['intra_topology_dict']['Nodes']
 
+    # Get sciond address of own AS
     ip_sciond = None
     for name, addr in sciond_addresses.items():
         if name.startswith(ISD_AS_id):
@@ -58,15 +59,20 @@ def test_SCION_ping(ASes, AS):
     if ip_sciond is None:
         raise Exception(f'No sciond address found for AS {ISD_AS_id}')
 
+    # Loop through all SCION nodes in own AS
     for host in net.hosts:
         name = host.name
         if name in nodes['Borderrouter'] or name in nodes['Internal-Router']:
             continue
         output(f'{name} -> \n')
+        # Get SCION dispatcher socket of specific SCION node in own AS
         dispatcher_socket = f"/run/shm/dispatcher/disp_{AS.FULL_NAME}_{name}.sock"
         # dispatcher_socket = f'/run/shm/dispatcher/default.sock'
+        # all_destination is array of tuples AS_NAME,ip
         for destination in all_destinations:
             output(f'\t{destination} -> ')
+            # --sciond specifies SCION Daemon address for the given AS
+            # --dispatcher is the specific SCION dispatcher for the node
             command = f"cd {AS.SCION_PATH} ; \
                         ./bin/scion ping --sciond {ip_sciond}:30255 \
                         --dispatcher {dispatcher_socket} {destination} -c 1 --timeout 3s"

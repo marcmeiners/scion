@@ -40,7 +40,7 @@ def parse_arguments():
         file_name.parent.mkdir(parents=True, exist_ok=True)
 
     protocol = args.protocol.upper()
-    if protocol not in ['OSPF']:
+    if protocol not in ['OSPF', 'IS-IS']:
         print(f'{args.protocol} is not a valid protocol')
         sys.exit(1)
 
