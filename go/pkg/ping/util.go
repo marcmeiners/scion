@@ -28,7 +28,7 @@ func Size(local, remote *snet.UDPAddr, pldSize int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := pkt.Serialize(); err != nil {
+	if err := pkt.Serialize(false); err != nil {
 		return 0, err
 	}
 	return len(pkt.Bytes), nil

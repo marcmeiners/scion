@@ -273,7 +273,7 @@ func (w *pathWatcher) sendProbe(ctx context.Context) {
 		logger.Info("Failed to create path probe packet", "err", err)
 		return
 	}
-	if err := w.conn.WriteTo(w.packet, w.path.UnderlayNextHop()); err != nil {
+	if err := w.conn.WriteTo(w.packet, w.path.UnderlayNextHop(), false); err != nil {
 		metrics.CounterInc(w.probesSendErrors)
 		logger.Error("Failed to send path probe", "err", err)
 	}

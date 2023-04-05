@@ -54,6 +54,7 @@ func newPing(pather CommandPather) *cobra.Command {
 		size        uint
 		timeout     time.Duration
 		tracer      string
+		colibri     bool
 	}
 
 	var cmd = &cobra.Command{
@@ -203,6 +204,7 @@ On other errors, ping will exit with code 2.
 						update.Size, update.Source.IA, update.Source.Host, update.Sequence,
 						update.RTT, additional)
 				},
+				IsColibri: flags.colibri,
 			})
 			pingSummary(stats, remote, time.Since(start))
 			if err != nil {
@@ -235,6 +237,7 @@ SCMP echo header and payload are equal to the MTU of the path. This flag overrid
 'payload_size' flag.`)
 	cmd.Flags().StringVar(&flags.logLevel, "log.level", "", app.LogLevelUsage)
 	cmd.Flags().StringVar(&flags.tracer, "tracing.agent", "", "Tracing agent address")
+	cmd.Flags().BoolVar(&flags.colibri, "colibri", false, "is a colibri packet")
 	return cmd
 }
 

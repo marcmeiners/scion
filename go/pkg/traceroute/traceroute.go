@@ -223,7 +223,7 @@ func (t *tracerouter) probeHop(ctx context.Context, hfIdx uint8, egress bool) (U
 	for i := 0; i < t.probesPerHop; i++ {
 		sendTs := time.Now()
 		t.stats.Sent++
-		if err := t.conn.WriteTo(pkt, t.remote.NextHop); err != nil {
+		if err := t.conn.WriteTo(pkt, t.remote.NextHop, false); err != nil {
 			return u, serrors.WrapStr("writing", err)
 		}
 		select {

@@ -30,7 +30,7 @@ import (
 // SCION packets.
 type PacketConn interface {
 	ReadFrom(pkt *Packet, ov *net.UDPAddr) error
-	WriteTo(pkt *Packet, ov *net.UDPAddr) error
+	WriteTo(pkt *Packet, ov *net.UDPAddr, isColibri bool) error
 	SetReadDeadline(t time.Time) error
 	SetWriteDeadline(t time.Time) error
 	SetDeadline(t time.Time) error
@@ -132,8 +132,8 @@ func (c *SCIONPacketConn) Close() error {
 	return c.Conn.Close()
 }
 
-func (c *SCIONPacketConn) WriteTo(pkt *Packet, ov *net.UDPAddr) error {
-	if err := pkt.Serialize(); err != nil {
+func (c *SCIONPacketConn) WriteTo(pkt *Packet, ov *net.UDPAddr, isColibri bool) error {
+	if err := pkt.Serialize(isColibri); err != nil {
 		return serrors.WrapStr("serialize SCION packet", err)
 	}
 

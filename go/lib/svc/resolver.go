@@ -147,7 +147,7 @@ func (roundTripper) RoundTrip(ctx context.Context, c snet.PacketConn, pkt *snet.
 		return nil, errNilUnderlay
 	}
 
-	if err := c.WriteTo(pkt, u); err != nil {
+	if err := c.WriteTo(pkt, u, false); err != nil {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

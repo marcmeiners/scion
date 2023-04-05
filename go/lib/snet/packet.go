@@ -528,7 +528,7 @@ func (p *Packet) Decode() error {
 }
 
 // Serialize serializes the PacketInfo into the raw buffer of the packet.
-func (p *Packet) Serialize() error {
+func (p *Packet) Serialize(isColibri bool) error {
 	p.Prepare()
 	if p.Payload == nil {
 		return serrors.New("no payload set")
@@ -540,6 +540,11 @@ func (p *Packet) Serialize() error {
 
 	var scionLayer slayers.SCION
 	scionLayer.Version = 0
+
+	if isColibri {
+		scionLayer.TrafficClass = 0xb7
+	}
+
 	// XXX(scrye): Do not set TrafficClass, to keep things simple while we
 	// transition to HeaderV2. These should be added once the transition is
 	// complete.

@@ -225,7 +225,7 @@ func (s server) handlePing(conn snet.PacketConn) error {
 	}
 	p.Path = replyPath
 	// Send pong
-	if err := conn.WriteTo(&p, &ov); err != nil {
+	if err := conn.WriteTo(&p, &ov, false); err != nil {
 		return withTag(serrors.WrapStr("sending reply", err))
 	}
 	log.Info("Sent pong to", "client", p.Destination)
@@ -338,7 +338,7 @@ func (c *client) ping(ctx context.Context, n int, path snet.Path) error {
 		},
 	}
 	log.Info("sending ping", "attempt", n, "path", path)
-	if err := c.conn.WriteTo(pkt, remote.NextHop); err != nil {
+	if err := c.conn.WriteTo(pkt, remote.NextHop, false); err != nil {
 		return err
 	}
 	return nil

@@ -206,7 +206,7 @@ func (p Prober) GetStatuses(ctx context.Context, paths []snet.Path) (map[string]
 						},
 					},
 				}
-				if err := conn.WriteTo(pkt, path.UnderlayNextHop()); err != nil {
+				if err := conn.WriteTo(pkt, path.UnderlayNextHop(), false); err != nil {
 					return err
 				}
 			}

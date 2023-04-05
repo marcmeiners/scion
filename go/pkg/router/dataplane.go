@@ -82,7 +82,7 @@ type bfdSession interface {
 type BatchConn interface {
 	ReadBatch(underlayconn.Messages) (int, error)
 	WriteTo([]byte, *net.UDPAddr) (int, error)
-	WriteBatch(msgs underlayconn.Messages, flags int) (int, error)
+	WriteBatch(msgs underlayconn.Messages, flags int, isColibri bool) (int, error)
 	Close() error
 }
 
@@ -535,7 +535,8 @@ func (d *DataPlane) Run(ctx context.Context) error {
 					writeMsgs[0].Addr = result.OutAddr
 				}
 
-				_, err = result.OutConn.WriteBatch(writeMsgs, syscall.MSG_DONTWAIT)
+				_, err = result.OutConn.WriteBatch(writeMsgs, syscall.MSG_DONTWAIT, result.isColibri)
+
 				if err != nil {
 					var errno syscall.Errno
 					if !errors.As(err, &errno) ||
@@ -596,10 +597,11 @@ func (d *DataPlane) initMetrics() {
 }
 
 type processResult struct {
-	EgressID uint16
-	OutConn  BatchConn
-	OutAddr  *net.UDPAddr
-	OutPkt   []byte
+	EgressID  uint16
+	OutConn   BatchConn
+	OutAddr   *net.UDPAddr
+	OutPkt    []byte
+	isColibri bool
 }
 
 func newPacketProcessor(d *DataPlane, ingressID uint16) *scionPacketProcessor {
@@ -1215,7 +1217,7 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 		if err != nil {
 			return r, err
 		}
-		return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt}, nil
+		return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: p.scionLayer.TrafficClass == 0xb7}, nil
 	}
 
 	// Outbound: pkts leaving the local IA.
@@ -1249,7 +1251,7 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 
 	// ASTransit: pkts leaving from another AS BR.
 	if a, ok := p.d.internalNextHops[egressID]; ok {
-		return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt}, nil
+		return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: p.scionLayer.TrafficClass == 0xb7}, nil
 	}
 	errCode := slayers.SCMPCodeUnknownHopFieldEgress
 	if !p.infoField.ConsDir {

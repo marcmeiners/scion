@@ -191,7 +191,7 @@ func (h *BaseHandler) Handle(request *Request) (Result, error) {
 		},
 	}
 
-	err = request.Conn.WriteTo(replyPacket, request.Underlay)
+	err = request.Conn.WriteTo(replyPacket, request.Underlay, false)
 	if err != nil {
 		return Error, err
 	}

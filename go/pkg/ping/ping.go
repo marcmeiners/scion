@@ -78,6 +78,7 @@ type Config struct {
 	// Update handler is invoked for every ping reply. Execution time must be
 	// small, as it is run synchronously.
 	UpdateHandler func(Update)
+	IsColibri     bool
 }
 
 // Run ping with the configuration. This blocks until the configured number
@@ -122,6 +123,7 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 		replies:       replies,
 		errHandler:    cfg.ErrHandler,
 		updateHandler: cfg.UpdateHandler,
+		colibri:       cfg.IsColibri,
 	}
 	return p.Ping(ctx, cfg.Remote)
 }
@@ -136,6 +138,7 @@ type pinger struct {
 	conn    snet.PacketConn
 	local   *snet.UDPAddr
 	replies <-chan reply
+	colibri bool
 
 	// Handlers
 	errHandler    func(error)
@@ -217,9 +220,8 @@ func (p *pinger) send(remote *snet.UDPAddr) error {
 			Port: underlay.EndhostPort,
 			Zone: remote.Host.Zone,
 		}
-
 	}
-	if err := p.conn.WriteTo(pkt, nextHop); err != nil {
+	if err := p.conn.WriteTo(pkt, nextHop, p.colibri); err != nil {
 		return err
 	}
 

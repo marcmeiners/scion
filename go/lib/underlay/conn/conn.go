@@ -42,7 +42,7 @@ type Conn interface {
 	ReadBatch(Messages) (int, error)
 	Write([]byte) (int, error)
 	WriteTo([]byte, *net.UDPAddr) (int, error)
-	WriteBatch(Messages, int) (int, error)
+	WriteBatch(Messages, int, bool) (int, error)
 	LocalAddr() *net.UDPAddr
 	RemoteAddr() *net.UDPAddr
 	SetReadDeadline(time.Time) error
@@ -96,8 +96,14 @@ func (c *connUDPIPv4) ReadBatch(msgs Messages) (int, error) {
 	return n, err
 }
 
-func (c *connUDPIPv4) WriteBatch(msgs Messages, flags int) (int, error) {
+func (c *connUDPIPv4) WriteBatch(msgs Messages, flags int, isColibri bool) (int, error) {
+	if isColibri {
+		c.pconn.SetTOS(0x10)
+	} else {
+		c.pconn.SetTOS(0x0)
+	}
 	return c.pconn.WriteBatch(msgs, flags)
+
 }
 
 // SetReadDeadline sets the read deadline associated with the endpoint.
@@ -134,7 +140,7 @@ func (c *connUDPIPv6) ReadBatch(msgs Messages) (int, error) {
 	return n, err
 }
 
-func (c *connUDPIPv6) WriteBatch(msgs Messages, flags int) (int, error) {
+func (c *connUDPIPv6) WriteBatch(msgs Messages, flags int, isColibri bool) (int, error) {
 	return c.pconn.WriteBatch(msgs, flags)
 }
 

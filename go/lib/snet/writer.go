@@ -83,7 +83,7 @@ func (c *scionConnWriter) WriteTo(b []byte, raddr net.Addr) (int, error) {
 
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
-	if err := c.conn.WriteTo(pkt, nextHop); err != nil {
+	if err := c.conn.WriteTo(pkt, nextHop, false); err != nil {
 		return 0, err
 	}
 	return len(b), nil
