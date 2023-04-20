@@ -11,6 +11,7 @@ from AutonomousSystem import AutonomousSystem
 from pathlib import Path
 from CLI import AS_CLI
 from mininet.log import info, output, error
+from intra_colibri import IntraColibri
 
 from python.topology.common import TopoID
 
@@ -310,6 +311,7 @@ class SCIONTopology(object):
             AS = AS_dict['AS']
             AS.add_SCION_services()
             AS.start()
+            IntraColibri(AS).startColibri()
             output(f'------   Network {ISD_AS_id} started ------\n')
 
         info('\n#####         All Networks started!         #####')
