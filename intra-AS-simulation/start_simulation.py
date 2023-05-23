@@ -99,6 +99,13 @@ class SCIONTopology(object):
         for link in list(intra_topo_dict['links']):
             if link['a'] not in all_nodes or link['b'] not in all_nodes:
                 intra_topo_dict['links'].remove(link)
+        if 'colibri-paths' in list(intra_topo_dict):
+            for path in intra_topo_dict['colibri-paths']:
+                colibri_path = list(path)
+                border_routers = list(intra_topo_dict['Nodes']['Borderrouter'])
+                assert len(colibri_path) > 1, "a colibri path must be of minimum lentgh 2"
+                assert colibri_path[0] in border_routers and colibri_path[-1] in border_routers, "Paths must start and end with a border router"         
+                # TODO: Add condition: paths with same start and end router must contain distinct non-br-nodes
 
         return intra_topo_dict
 
@@ -312,6 +319,12 @@ class SCIONTopology(object):
             AS.add_SCION_services()
             AS.start()
             IntraColibri(AS).startColibri()
+            intra_co = IntraColibri(AS)
+            if 'colibri-paths' in list(self.ASes[ISD_AS_id]["intra_topology_dict"]):
+                label = 100
+                for path in list(self.ASes[ISD_AS_id]["intra_topology_dict"]['colibri-paths']):
+                    intra_co.initiatePath(path, label)
+                    label+=1       
             output(f'------   Network {ISD_AS_id} started ------\n')
 
         info('\n#####         All Networks started!         #####')

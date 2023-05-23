@@ -110,9 +110,8 @@ class OSPF(object):
         config += f"\n\tospf router-id {node.defaultIntf().IP()}"
         config += "\n\tredistribute connected"
         config += "\n\tpassive-interface default"
-        config += "\n\tmpls-te"
-        config += "\n\tmpls-te"
-        config += f"\n\tmpls-te router-address {node.defaultIntf().IP()}"
+        # config += "\n\tmpls-te"
+        # config += f"\n\tmpls-te router-address {node.defaultIntf().IP()}"
 
         for intf in node.intfList():
             config += f"\n\tno passive-interface {intf.name}"

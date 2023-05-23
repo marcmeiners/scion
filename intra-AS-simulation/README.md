@@ -31,7 +31,7 @@
 - Build SCION Proto with intra-AS simulation enabled:
 
     ```bash
-    ./scion-intra.sh <AS-config-file> <SCION-topo-config-file> [other-SCION-topology-flags]
+    ./scion-intra.sh build <AS-config-file> <SCION-topo-config-file> [other-SCION-topology-flags]
     ```
 
 - Then run the simulation:
