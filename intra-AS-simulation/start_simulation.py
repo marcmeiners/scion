@@ -318,7 +318,6 @@ class SCIONTopology(object):
             AS = AS_dict['AS']
             AS.add_SCION_services()
             AS.start()
-            IntraColibri(AS).startColibri()
             intra_co = IntraColibri(AS)
             if 'colibri-paths' in list(self.ASes[ISD_AS_id]["intra_topology_dict"]):
                 label = 100

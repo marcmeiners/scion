@@ -6,6 +6,7 @@ from pathlib import Path
 from mininet.node import UserSwitch, Node
 from mininet.net import Mininet
 from mininet.link import TCULink
+from mininet.log import info, output, error
 from routing_protocols import OSPF
 from routing_protocols import ISIS
 from mininet.topo import Topo
@@ -106,27 +107,41 @@ class Intra_AS_Topo(Topo):
             delay = link.get('delay', None)
             jitter = link.get('jitter', None)
             loss = link.get('loss', None)
+            mtu = link.get('mtu', None)
+            
             if bw is not None:
                 bw = int(bw)
+                if bw and (bw < 0 or bw > 1000):
+                    bw = None
+                    error(f'Bandwidth limit {bw} is outside supported range 0..1000 - ignoring\n')
             if delay is not None:
-                delay = f'{delay}ms'
+                delay = float(delay)
             if jitter is not None:
-                jitter = f'{jitter}ms'
+                jitter = float(jitter)
             if loss is not None:
                 loss = float(loss)
+                if loss and (loss < 0 or loss > 100):
+                    loss = None
+                    error(f'Bad loss percentage {loss} - ignoring\n')
+            if mtu is not None:
+                mtu = int(mtu)
 
             self.addLink(node_a, node_b,
-                         bw=bw, delay=delay, jitter=jitter, loss=loss,
+                         bw=None, delay=None, jitter=None, loss=None,
                          params1={'ip': a_addr},
                          params2={'ip': b_addr}
                          )
 
-            # Adding MTU has to be done manually + after building Mininet
-            if 'mtu' in link:
-                nr = self.link_nr[(node_a_name, node_b_name)]
-                self.intra_links[node_a][node_b][nr] = {
-                    'mtu': link['mtu']
-                }
+            # The parameters will later on all be added manually once the network is built
+            nr = self.link_nr[(node_a_name, node_b_name)]
+            self.intra_links[node_a][node_b][nr] = {
+                'bw': bw,
+                'delay': delay,
+                'jitter': jitter,
+                'loss': loss,
+                'mtu': mtu
+            }
+            
             self.link_nr[(node_a_name, node_b_name)] += 1
             self.link_nr[(node_b_name, node_a_name)] += 1
 
@@ -169,9 +184,70 @@ class AutonomousSystem(object):
             waitConnected=True
 
         )
-        self.add_addtional_link_config()
+        self.setup_qdisc_system()
         self.start_intra_routing_protocol()
 
+    # add qdiscs which give colibri packets precedence and add link attributes manually 
+    # this function can only be executed once the mininet network has been started       
+    def setup_qdisc_system(self):
+        for a, a_conf in self.intra_topo.intra_links.items():
+            node_a = self.net.get(a)
+            for b, b_conf in a_conf.items():
+                node_b = self.net.get(b)
+                for link_nr, conf in b_conf.items():
+                    link = self.net.linksBetween(node_a, node_b)[link_nr]
+                    if link.intf1.node == node_a:
+                        intf_a = link.intf1.name
+                        intf_b = link.intf2.name
+                    else:
+                        intf_a = link.intf2.name
+                        intf_b = link.intf1.name
+                        
+                    if conf['mtu'] != None:
+                        mtu = conf['mtu']
+                        node_a.cmd(f'ip link set dev {intf_a} mtu {mtu}')
+                        node_b.cmd(f'ip link set dev {intf_b} mtu {mtu}')
+                      
+                    bw = conf['bw']
+                    delay = conf['delay']
+                    loss = conf['loss']
+                    jitter = conf['jitter']
+                    
+                    cmds = [] 
+                    
+                    # Bandwith is provided in Mbit - convert it to Kbit and subtract 1 Kbit for the default queue
+                    # the 'rate' specifies the guaranteed bandwith - so if we set it that way it means that colibri packets are just always capable to use (almost) the whole bandwith of the link (it's not allowed to set the rate to 0)
+                    bw = bw * 1000 - 1 if bw != None else None
+                    bw_cmd = f" rate {bw + 1}Kbit" if bw != None else " rate 40Gbit"
+                    bw_cmd_colibri_queue = f" rate {bw}Kbit" if bw != None else " rate 39Gbit"
+                    bw_cmd_default_queue = " rate 1Kbit" if bw != None else " rate 1Gbit"
+                    
+                    # Set up the new root HTB qdisc with bandwidth limit
+                    cmds += ['sudo tc qdisc add dev %s root handle 1: htb default 20',
+                            'sudo tc class add dev %s parent 1: classid 1:1 htb' + bw_cmd]
+                    
+                    # Set up two child classes, one for regular traffic (1:20) and one for colibri traffic (1:10)
+                    cmds += ['tc class add dev %s parent 1:1 classid 1:10 htb prio 1' + bw_cmd_colibri_queue,
+                            'tc class add dev %s parent 1:1 classid 1:20 htb prio 2' + bw_cmd_default_queue] 
+                        
+                    # Set up the new parent qdisc with netem parameters
+                    netems = '%s%s%s' % (
+                        f'delay {delay}ms ' if delay is not None else '',
+                        f'{jitter}ms ' if jitter is not None and delay is not None else '',
+                        f'loss {loss:.5f} ' if (loss is not None and loss > 0) else '')
+                    
+                    if netems:
+                        cmds += ['sudo tc qdisc add dev %s parent 1:10 netem ' + netems,
+                                'sudo tc qdisc add dev %s parent 1:20 netem ' + netems] 
+                    
+                    # Set up filters that read TOS values and put the packets in the correct queues
+                    # For all other TOS values, the default class is chosen as defined above
+                    cmds +=['tc filter add dev %s protocol ip parent 1: flower ip_tos 0x10/0xff flowid 1:10'] 
+                    
+                    for cmd in cmds:
+                        node_a.cmd(cmd % intf_a)
+                        node_b.cmd(cmd % intf_b)
+                        
     def gen_subnets(self):
         """Helper function: Sets subnet attributes.
 
@@ -188,24 +264,6 @@ class AutonomousSystem(object):
                 self.SUBNETS.append(subnet)
             elif any(containing_name):
                 self.BR_SUBNETS.append(subnet)
-
-    def add_addtional_link_config(self):
-        """After Mininet is built, add additional link config.
-
-        MTU for example can only be set after Mininet is built
-        """
-        for a, a_conf in self.intra_topo.intra_links.items():
-            node_a = self.net.get(a)
-            for b, b_conf in a_conf.items():
-                node_b = self.net.get(b)
-                for link_nr, conf in b_conf.items():
-                    link = self.net.linksBetween(node_a, node_b)[link_nr]
-                    intf1 = link.intf1.name
-                    intf2 = link.intf2.name
-                    if 'mtu' in conf:
-                        mtu = conf['mtu']
-                        node_a.cmd(f'ip link set dev {intf1} mtu {mtu}')
-                        node_b.cmd(f'ip link set dev {intf2} mtu {mtu}')
 
     def start_intra_routing_protocol(self):
         self.protocol = self.default_routing_protocol(self)
