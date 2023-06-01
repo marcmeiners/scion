@@ -17,16 +17,28 @@ class IntraColibri(object):
         return None
     
     def initiatePath(self, path, label):
+        #for paths of lentgh > 2 this loop is executed minimum one time - shorter paths are not allowed anyways
         for i in range(1, len(path)-1):
-            if(len(path) <= 3):
-                # length == 2: border routers are directly connected: no need to specify a path
-                # length == 3: border routers are connected through a single router: no need to specify a path since border routers have only one interface
-                break
             node = self.net.getNodeByName(path[i])
             prev_node = self.net.getNodeByName(path[i-1])
             ingress_intf = self.findInterface(prev_node, node)
             next_node = self.net.getNodeByName(path[i+1])
             egress_intf = self.findInterface(next_node, node)
+            
+            if i == 1:
+                # Set up filters that read TOS values and put the packets in the correct queues of the first node
+                first_node_egress_intf = self.findInterface(node, prev_node)
+                prev_node.cmd(f"sudo tc filter add dev {first_node_egress_intf} protocol ip parent 1: flower \
+                              ip_tos 0x10/0xff \
+                              flowid 1:10")
+                
+            if len(path) == 3:
+                # border routers are connected through a single router: no need to specify a path since border routers have only one interface
+                # additionally set the TOS precedence rule at the egress interface of the second last node (the router in the middle)
+                node.cmd(f"tc filter add dev {egress_intf} protocol ip parent 1: flower \
+                        ip_tos 0x10/0xff \
+                        flowid 1:10")
+                break
 
             # Second last node case
             if i == len(path)-2:
@@ -44,9 +56,10 @@ class IntraColibri(object):
                 # Otherwise the packet gets dropped at the destination BR because it's source and destination addresses 
                 # are still equal to the first hop before setting the mpls header
                 node.cmd(f"tc filter add dev {egress_intf} protocol ip parent 1: flower \
-                         ip_tos 0x10/0xff \
-                         action pedit ex munge eth dst set {new_dst_mac} \
-                         action pedit ex munge eth src set {new_src_mac}")
+                        ip_tos 0x10/0xff \
+                        action pedit ex munge eth dst set {new_dst_mac} \
+                        action pedit ex munge eth src set {new_src_mac} \
+                        flowid 1:10")
             else:
                 # Second node case
                 if i == 1:
@@ -63,3 +76,8 @@ class IntraColibri(object):
                     node.cmd(f"tc filter add dev {ingress_intf} protocol mpls_uc parent ffff: flower \
                                 mpls_label {label} \
                                 action mirred egress redirect dev {egress_intf}")
+                    # Set up filters that read TOS values and put the packets in the correct queues of the second last node
+                    # just before they arrive at the border router
+                    node.cmd(f"tc filter add dev {egress_intf} protocol mpls_uc parent 1: flower \
+                            mpls_label {label} \
+                            action flowid 1:10")

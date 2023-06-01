@@ -240,10 +240,6 @@ class AutonomousSystem(object):
                         cmds += ['sudo tc qdisc add dev %s parent 1:10 netem ' + netems,
                                 'sudo tc qdisc add dev %s parent 1:20 netem ' + netems] 
                     
-                    # Set up filters that read TOS values and put the packets in the correct queues
-                    # For all other TOS values, the default class is chosen as defined above
-                    cmds +=['tc filter add dev %s protocol ip parent 1: flower ip_tos 0x10/0xff flowid 1:10'] 
-                    
                     for cmd in cmds:
                         node_a.cmd(cmd % intf_a)
                         node_b.cmd(cmd % intf_b)
