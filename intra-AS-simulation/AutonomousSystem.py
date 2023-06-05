@@ -219,8 +219,8 @@ class AutonomousSystem(object):
                     # the 'rate' specifies the guaranteed bandwith - so if we set it that way it means that colibri packets are just always capable to use (almost) the whole bandwith of the link (it's not allowed to set the rate to 0)
                     bw = bw * 1000 - 1 if bw != None else None
                     bw_cmd = f" rate {bw + 1}Kbit" if bw != None else " rate 40Gbit"
-                    bw_cmd_colibri_queue = f" rate {bw}Kbit" if bw != None else " rate 39Gbit"
-                    bw_cmd_default_queue = " rate 1Kbit" if bw != None else " rate 1Gbit"
+                    bw_cmd_colibri_queue = f" rate {bw}Kbit ceil {bw + 1}Kbit" if bw != None else " rate 39Gbit ceil 40Gbit"
+                    bw_cmd_default_queue = f" rate 1Kbit ceil {bw + 1}Kbit" if bw != None else " rate 1Gbit ceil 40Gbit"
                     
                     # Set up the new root HTB qdisc with bandwidth limit
                     cmds += ['sudo tc qdisc add dev %s root handle 1: htb default 20',

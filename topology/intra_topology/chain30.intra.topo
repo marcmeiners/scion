@@ -50,7 +50,7 @@ links:
   - {a: "cs1", b: "r1"}
   - {a: "sd1", b: "r1"}
   - {a: "cl1", b: "r1"}
-  - {a: "br1", b: "r1", bw: 20, mtu: 1300, delay: 100, loss: 2.6, jitter: 8}
+  - {a: "br1", b: "r1", bw: 20}
   - {a: "br2", b: "r1"}
   - {a: "br3", b: "r30"}
   - {a: "r1", b: "r30"}
