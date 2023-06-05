@@ -24,20 +24,8 @@ class IntraColibri(object):
             ingress_intf = self.findInterface(prev_node, node)
             next_node = self.net.getNodeByName(path[i+1])
             egress_intf = self.findInterface(next_node, node)
-            
-            if i == 1:
-                # Set up filters that read TOS values and put the packets in the correct queues of the first node
-                first_node_egress_intf = self.findInterface(node, prev_node)
-                prev_node.cmd(f"sudo tc filter add dev {first_node_egress_intf} protocol ip parent 1: flower \
-                              ip_tos 0x10/0xff \
-                              flowid 1:10")
                 
             if len(path) == 3:
-                # border routers are connected through a single router: no need to specify a path since border routers have only one interface
-                # additionally set the TOS precedence rule at the egress interface of the second last node (the router in the middle)
-                node.cmd(f"tc filter add dev {egress_intf} protocol ip parent 1: flower \
-                        ip_tos 0x10/0xff \
-                        flowid 1:10")
                 break
 
             # Second last node case
@@ -58,8 +46,7 @@ class IntraColibri(object):
                 node.cmd(f"tc filter add dev {egress_intf} protocol ip parent 1: flower \
                         ip_tos 0x10/0xff \
                         action pedit ex munge eth dst set {new_dst_mac} \
-                        action pedit ex munge eth src set {new_src_mac} \
-                        flowid 1:10")
+                        action pedit ex munge eth src set {new_src_mac}")
             else:
                 # Second node case
                 if i == 1:
