@@ -25,6 +25,7 @@ from python.lib.defines import (
     AS_LIST_FILE,
     TOPO_FILE,
     INTRA_CONFIG_FILE,
+    INTRA_TOPOLOGY_DOT_FILE,
 )
 
 
@@ -136,6 +137,17 @@ class SCIONTopology(object):
         if not nx.is_connected(G):
             error("ERROR: AS %s: Intra topology is not connected", ISD_AS_id)
             sys.exit(1)
+            
+        # Convert MultiGraph to PyDot Dot object
+        dot_graph = nx.drawing.nx_pydot.to_pydot(G)
+        # get AS folder path in gen folder
+        AS_dir = Path(self.gen_dir, TopoID(ISD_AS_id).AS_file())
+        # get dot file 
+        dot_file_path = Path(AS_dir, INTRA_TOPOLOGY_DOT_FILE)
+        # Save the Dot object as a .dot file
+        with open(dot_file_path, 'w') as dot_file:
+            dot_file.write(dot_graph.to_string())
+            
         return G
 
     def create_networks(self):

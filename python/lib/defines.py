@@ -33,6 +33,7 @@ PROM_FILE = "prometheus.yml"
 INTRA_CONFIG_FILE = 'intra-configuration.yml'
 #: Intra topology file
 INTRA_TOPOLOGY_FILE = 'intra-topology.yml'
+INTRA_TOPOLOGY_DOT_FILE = 'intra-topology.dot'
 
 #: Default SCION router UDP port.
 SCION_ROUTER_PORT = 50000
