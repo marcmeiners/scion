@@ -21,6 +21,7 @@ package conn
 
 import (
 	"net"
+	"sync"
 	"syscall"
 	"time"
 
@@ -78,6 +79,7 @@ func New(listen, remote *net.UDPAddr, cfg *Config) (Conn, error) {
 type connUDPIPv4 struct {
 	connUDPBase
 	pconn *ipv4.PacketConn
+	lock  sync.Mutex
 }
 
 func newConnUDPIPv4(listen, remote *net.UDPAddr, cfg *Config) (*connUDPIPv4, error) {
@@ -97,13 +99,16 @@ func (c *connUDPIPv4) ReadBatch(msgs Messages) (int, error) {
 }
 
 func (c *connUDPIPv4) WriteBatch(msgs Messages, flags int, isColibri bool) (int, error) {
+	c.lock.Lock()         // Acquire the lock before entering critical section
+	defer c.lock.Unlock() // Defer the Unlock operation till function exits
+	// The lock will only block other goroutines that are also trying to acquire the same lock - i.e. calling the same function
+
 	if isColibri {
 		c.pconn.SetTOS(0x10)
 	} else {
 		c.pconn.SetTOS(0x0)
 	}
 	return c.pconn.WriteBatch(msgs, flags)
-
 }
 
 // SetReadDeadline sets the read deadline associated with the endpoint.
