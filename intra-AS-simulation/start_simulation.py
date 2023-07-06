@@ -12,6 +12,7 @@ from pathlib import Path
 from CLI import AS_CLI
 from mininet.log import info, output, error
 from intra_colibri import IntraColibri
+from path_selection import ComputeColibriPaths
 
 from python.topology.common import TopoID
 
@@ -25,7 +26,6 @@ from python.lib.defines import (
     AS_LIST_FILE,
     TOPO_FILE,
     INTRA_CONFIG_FILE,
-    INTRA_TOPOLOGY_DOT_FILE,
 )
 
 
@@ -136,18 +136,7 @@ class SCIONTopology(object):
             G.add_edge(a, b, label=label)
         if not nx.is_connected(G):
             error("ERROR: AS %s: Intra topology is not connected", ISD_AS_id)
-            sys.exit(1)
-            
-        # Convert MultiGraph to PyDot Dot object
-        dot_graph = nx.drawing.nx_pydot.to_pydot(G)
-        # get AS folder path in gen folder
-        AS_dir = Path(self.gen_dir, TopoID(ISD_AS_id).AS_file())
-        # get dot file 
-        dot_file_path = Path(AS_dir, INTRA_TOPOLOGY_DOT_FILE)
-        # Save the Dot object as a .dot file
-        with open(dot_file_path, 'w') as dot_file:
-            dot_file.write(dot_graph.to_string())
-            
+            sys.exit(1)   
         return G
 
     def create_networks(self):
@@ -282,7 +271,41 @@ class SCIONTopology(object):
         for cmd in cmds:
             in_net_BR1.cmd(cmd % intf1)
             in_net_BR2.cmd(cmd % intf2)
-
+            
+    def initiate_colibri_paths(self, ISD_AS_id, AS):
+        intra_co = IntraColibri(AS)
+        # If Colibri paths are specified in the topology file, use them, otherwise compute them
+        if 'colibri-paths' in list(self.ASes[ISD_AS_id]["intra_topology_dict"]):
+            label = 100
+            for path in list(self.ASes[ISD_AS_id]["intra_topology_dict"]['colibri-paths']):
+                intra_co.initiatePath(path, label)
+                label += 1
+        else:
+            border_routers = list(self.ASes[ISD_AS_id]['intra_topology_dict']['Nodes']['Borderrouter'])
+            graph = self.ASes[ISD_AS_id]['intra_topo_graph']
+            pairs = list(set([(min(i,j), max(i,j)) for i in border_routers for j in border_routers if i!=j]))
+            pairs += list(set([(max(i,j), min(i,j)) for i in border_routers for j in border_routers if i!=j]))
+            diGraph = nx.DiGraph(graph)
+            br_pair_to_paths = {}
+            demands = {}
+            number_of_random_samples = 10
+            path_selection = ComputeColibriPaths()
+            for (i,j) in pairs:
+                paths_nodes = list(nx.all_simple_paths(diGraph, source=i, target=j))
+                paths_links = []
+                for p in paths_nodes:
+                    paths_links.append([(p[k], p[k + 1]) for k in range(len(p) - 1)])
+                br_pair_to_paths[(i,j)] = paths_links
+                demands[(i,j)] = 0
+            br_pair_to_chosen_paths, edge_usages = path_selection.choose_paths(br_pair_to_paths, diGraph, None,  number_of_random_samples, demands)
+            br_pair_to_chosen_paths, edge_usages = path_selection.choose_backup_paths(br_pair_to_paths, br_pair_to_chosen_paths, diGraph, edge_usages, number_of_random_samples, demands)
+            label = 100
+            for paths in br_pair_to_chosen_paths.values():
+                #TODO: Currently only the primary path is used - the backup one is ignored
+                path = path_selection.path_as_node_list(paths[0])
+                intra_co.initiatePath(path, label)
+                label += 1
+                            
     def start_CLI(self):
         """Start global CLI"""
         while True:
@@ -330,12 +353,7 @@ class SCIONTopology(object):
             AS = AS_dict['AS']
             AS.add_SCION_services()
             AS.start()
-            intra_co = IntraColibri(AS)
-            if 'colibri-paths' in list(self.ASes[ISD_AS_id]["intra_topology_dict"]):
-                label = 100
-                for path in list(self.ASes[ISD_AS_id]["intra_topology_dict"]['colibri-paths']):
-                    intra_co.initiatePath(path, label)
-                    label+=1       
+            self.initiate_colibri_paths(ISD_AS_id, AS)
             output(f'------   Network {ISD_AS_id} started ------\n')
 
         info('\n#####         All Networks started!         #####')
