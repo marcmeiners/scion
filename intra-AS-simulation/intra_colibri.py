@@ -17,6 +17,7 @@ class IntraColibri(object):
         return None
     
     def initiatePath(self, path, label):
+        lastNodeIP = self.net.getNodeByName(path[-1]).intfList()[0].IP()
         #for paths of lentgh > 2 this loop is executed minimum one time - shorter paths are not allowed anyways
         for i in range(1, len(path)-1):
             node = self.net.getNodeByName(path[i])
@@ -53,6 +54,7 @@ class IntraColibri(object):
                     # If the packet has a specifc TOS value, push an mpls label and redirect it to the correct interface
                     node.cmd(f"tc qdisc add dev {ingress_intf} handle ffff: ingress")
                     node.cmd(f"tc filter add dev {ingress_intf} protocol ip parent ffff: flower \
+                                dst {lastNodeIP} \
                                 ip_tos 0x10/0xff \
                                 action mpls push protocol mpls_uc label {label}  \
                                 action mirred egress redirect dev {egress_intf}")
