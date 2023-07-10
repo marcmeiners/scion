@@ -82,7 +82,7 @@ type bfdSession interface {
 type BatchConn interface {
 	ReadBatch(underlayconn.Messages) (int, error)
 	WriteTo([]byte, *net.UDPAddr) (int, error)
-	WriteBatch(msgs underlayconn.Messages, flags int, isColibri bool) (int, error)
+	WriteBatch(msgs underlayconn.Messages, flags int, isColibri bool, isNTP bool) (int, error)
 	Close() error
 }
 
@@ -535,7 +535,7 @@ func (d *DataPlane) Run(ctx context.Context) error {
 					writeMsgs[0].Addr = result.OutAddr
 				}
 
-				_, err = result.OutConn.WriteBatch(writeMsgs, syscall.MSG_DONTWAIT, result.isColibri)
+				_, err = result.OutConn.WriteBatch(writeMsgs, syscall.MSG_DONTWAIT, result.isColibri, result.isNTP)
 
 				if err != nil {
 					var errno syscall.Errno
@@ -602,6 +602,7 @@ type processResult struct {
 	OutAddr   *net.UDPAddr
 	OutPkt    []byte
 	isColibri bool
+	isNTP     bool
 }
 
 func newPacketProcessor(d *DataPlane, ingressID uint16) *scionPacketProcessor {
@@ -1217,7 +1218,18 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 		if err != nil {
 			return r, err
 		}
-		return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: p.scionLayer.TrafficClass == 0xb7}, nil
+
+		switch {
+		//Colibri Packet
+		case p.scionLayer.TrafficClass == 0xb7:
+			return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: true, isNTP: false}, nil
+		//NTP Packet
+		case p.scionLayer.TrafficClass != 0x0:
+			return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: false, isNTP: true}, nil
+		//SCION Paket
+		default:
+			return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: false, isNTP: false}, nil
+		}
 	}
 
 	// Outbound: pkts leaving the local IA.
@@ -1251,7 +1263,17 @@ func (p *scionPacketProcessor) process() (processResult, error) {
 
 	// ASTransit: pkts leaving from another AS BR.
 	if a, ok := p.d.internalNextHops[egressID]; ok {
-		return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: p.scionLayer.TrafficClass == 0xb7}, nil
+		switch {
+		//Colibri Packet
+		case p.scionLayer.TrafficClass == 0xb7:
+			return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: true, isNTP: false}, nil
+		//NTP Packet
+		case p.scionLayer.TrafficClass != 0x0:
+			return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: false, isNTP: true}, nil
+		//SCION Paket
+		default:
+			return processResult{OutConn: p.d.internal, OutAddr: a, OutPkt: p.rawPkt, isColibri: false, isNTP: false}, nil
+		}
 	}
 	errCode := slayers.SCMPCodeUnknownHopFieldEgress
 	if !p.infoField.ConsDir {

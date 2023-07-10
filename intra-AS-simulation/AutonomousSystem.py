@@ -242,6 +242,7 @@ class AutonomousSystem(object):
                         
                     # Set up filters that read TOS values and put the packets in the correct queues
                     # For all other TOS values, the default class is chosen as defined above
+                    cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x09/0xff flowid 1:10']
                     cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x10/0xff flowid 1:10']
                     
                     for cmd in cmds:

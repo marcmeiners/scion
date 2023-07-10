@@ -43,7 +43,7 @@ type Conn interface {
 	ReadBatch(Messages) (int, error)
 	Write([]byte) (int, error)
 	WriteTo([]byte, *net.UDPAddr) (int, error)
-	WriteBatch(Messages, int, bool) (int, error)
+	WriteBatch(Messages, int, bool, bool) (int, error)
 	LocalAddr() *net.UDPAddr
 	RemoteAddr() *net.UDPAddr
 	SetReadDeadline(time.Time) error
@@ -98,13 +98,15 @@ func (c *connUDPIPv4) ReadBatch(msgs Messages) (int, error) {
 	return n, err
 }
 
-func (c *connUDPIPv4) WriteBatch(msgs Messages, flags int, isColibri bool) (int, error) {
+func (c *connUDPIPv4) WriteBatch(msgs Messages, flags int, isColibri bool, isNTP bool) (int, error) {
 	c.lock.Lock()         // Acquire the lock before entering critical section
 	defer c.lock.Unlock() // Defer the Unlock operation till function exits
 	// The lock will only block other goroutines that are also trying to acquire the same lock - i.e. calling the same function
 
 	if isColibri {
 		c.pconn.SetTOS(0x10)
+	} else if isNTP {
+		c.pconn.SetTOS(0x09)
 	} else {
 		c.pconn.SetTOS(0x0)
 	}
