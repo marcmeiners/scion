@@ -170,6 +170,46 @@ class ConfigGenerator(object):
             self.check_NR_connections(intra_topo_dict, asStr)
             # check if network is connected
             self.check_network_connected(intra_topo_dict, asStr)
+            #check if colibri paths have correct format
+            if('colibri-paths' in intra_topo_dict):
+                self.check_colibri_paths(intra_topo_dict)
+            
+    def check_colibri_paths(self, intra_topo_dict):
+        # Build a graph to check connectivity of colibri paths
+        nodes = intra_topo_dict["Nodes"]
+        G = nx.MultiGraph()
+        for node_type, node_list in nodes.items():
+            for node in node_list:
+                G.add_node(node)
+        topo_links = intra_topo_dict["links"]
+        for link in topo_links:
+            a = link['a']
+            b = link['b']
+            G.add_edge(a, b)
+        # Paths have to be of minimum length 3
+        intra_topo_dict['colibri-paths'] = [path for path in intra_topo_dict['colibri-paths'] if len(path) >= 3]
+        borderrouters = list(intra_topo_dict['Nodes']['Borderrouter'])
+        borderrouter_pairs = {}
+        for path in list(intra_topo_dict['colibri-paths']):
+            # First and last node must be border routers
+            if not (path[0] in borderrouters and path[-1] in borderrouters):
+                intra_topo_dict['colibri-paths'].remove(path)
+            # No loops allowed in a colibri path
+            if len(path) > len(set(path)):
+                intra_topo_dict['colibri-paths'].remove(path)
+            # Check connectivity of colibri paths
+            for node1, node2 in zip(path, path[1:]):
+                if not G.has_edge(node1, node2):
+                    intra_topo_dict['colibri-paths'].remove(path)
+                    break
+            # Only two paths allowed per (ordered) border router pair (paths are directed)
+            if (path[0], path[-1]) in borderrouter_pairs.keys():
+                if borderrouter_pairs[(path[0], path[-1])] == 2:
+                    intra_topo_dict['colibri-paths'].remove(path)
+                else:
+                    borderrouter_pairs[(path[0], path[-1])] = 2
+            else:
+                borderrouter_pairs[(path[0], path[-1])] = 1
 
     def check_IP_version(self):
         for asStr, params in self.topo_config["ASes"].items():
