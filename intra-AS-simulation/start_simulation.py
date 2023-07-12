@@ -277,8 +277,14 @@ class SCIONTopology(object):
         # If Colibri paths are specified in the topology file, use them, otherwise compute them
         if 'colibri-paths' in list(self.ASes[ISD_AS_id]["intra_topology_dict"]):
             label = 100
+            br_pair_to_path = {}
             for path in list(self.ASes[ISD_AS_id]["intra_topology_dict"]['colibri-paths']):
-                intra_co.initiatePath(path, label)
+                if (path[0], path[-1]) in br_pair_to_path.keys():
+                    if(path != br_pair_to_path[(path[0], path[-1])]):
+                        intra_co.initiatePath(path, label, "0x11")
+                else:
+                    intra_co.initiatePath(path, label, "0x10")
+                    br_pair_to_path[(path[0], path[-1])] = path
                 label += 1
         else:
             border_routers = list(self.ASes[ISD_AS_id]['intra_topology_dict']['Nodes']['Borderrouter'])
@@ -301,10 +307,13 @@ class SCIONTopology(object):
             br_pair_to_chosen_paths, edge_usages = path_selection.choose_backup_paths(br_pair_to_paths, br_pair_to_chosen_paths, diGraph, edge_usages, number_of_random_samples, demands)
             label = 100
             for paths in br_pair_to_chosen_paths.values():
-                #TODO: Currently only the primary path is used - the backup one is ignored
-                path = path_selection.path_as_node_list(paths[0])
-                intra_co.initiatePath(path, label)
+                path1 = path_selection.path_as_node_list(paths[0])
+                intra_co.initiatePath(path1, label, "0x10")
                 label += 1
+                path2 = path_selection.path_as_node_list(paths[1])
+                if path1 != path2:
+                    intra_co.initiatePath(path1, label, "0x11")
+                    label += 1
                             
     def start_CLI(self):
         """Start global CLI"""

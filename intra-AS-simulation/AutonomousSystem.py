@@ -132,7 +132,7 @@ class Intra_AS_Topo(Topo):
                          params2={'ip': b_addr}
                          )
 
-            # The parameters will later on all be added manually once the network is built
+            # The parameters will later on all be added using customized tc rules once the network is built
             nr = self.link_nr[(node_a_name, node_b_name)]
             self.intra_links[node_a][node_b][nr] = {
                 'bw': bw,
@@ -244,6 +244,8 @@ class AutonomousSystem(object):
                     # For all other TOS values, the default class is chosen as defined above
                     cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x09/0xff flowid 1:10']
                     cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x10/0xff flowid 1:10']
+                    cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x11/0xff flowid 1:10']
+
                     
                     for cmd in cmds:
                         node_a.cmd(cmd % intf_a)

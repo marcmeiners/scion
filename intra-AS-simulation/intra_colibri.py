@@ -16,7 +16,7 @@ class IntraColibri(object):
                 return intf.name
         return None
     
-    def initiatePath(self, path, label):
+    def initiatePath(self, path, label, tos):
         lastNodeIP = self.net.getNodeByName(path[-1]).intfList()[0].IP()
         #for paths of lentgh > 2 this loop is executed minimum one time - shorter paths are not allowed anyways
         for i in range(1, len(path)-1):
@@ -45,7 +45,7 @@ class IntraColibri(object):
                 # Otherwise the packet gets dropped at the destination BR because it's source and destination addresses 
                 # are still equal to the first hop before setting the mpls header
                 node.cmd(f"tc filter add dev {egress_intf} protocol ip parent 1: flower \
-                        ip_tos 0x10/0xff \
+                        ip_tos {tos}/0xff \
                         action pedit ex munge eth dst set {new_dst_mac} \
                         action pedit ex munge eth src set {new_src_mac}")
             else:
@@ -55,7 +55,7 @@ class IntraColibri(object):
                     node.cmd(f"tc qdisc add dev {ingress_intf} handle ffff: ingress")
                     node.cmd(f"tc filter add dev {ingress_intf} protocol ip parent ffff: flower \
                                 dst {lastNodeIP} \
-                                ip_tos 0x10/0xff \
+                                ip_tos {tos}/0xff \
                                 action mpls push protocol mpls_uc label {label}  \
                                 action mirred egress redirect dev {egress_intf}")
                 # Inner-Path node case
