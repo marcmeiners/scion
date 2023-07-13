@@ -147,7 +147,7 @@ func (c *connUDPIPv6) ReadBatch(msgs Messages) (int, error) {
 	return n, err
 }
 
-func (c *connUDPIPv6) WriteBatch(msgs Messages, flags int, isColibri bool) (int, error) {
+func (c *connUDPIPv6) WriteBatch(msgs Messages, flags int, isColibri bool, isNTP bool) (int, error) {
 	return c.pconn.WriteBatch(msgs, flags)
 }
 
