@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from mininet.log import info, output
 from mininet.cli import CLI
 
-from test_SCION_in_mininet import test_SCION_ping, test_SCION_bwtest_client_server
+from test_SCION_in_mininet import test_SCION_ping, test_SCION_bwtest_client_server, export_routing_tables
 
 
 def plot_topology(AS):
@@ -62,6 +62,7 @@ def AS_CLI(networks, ASes, AS):
             output('[2] Start SCION bandwidth test\n')
             output('[3] Start Mininet CLI\n')
             output('[4] Draw intra-AS topology\n')
+            output('[5] Export Routing Tables\n')
             option = input('Enter option: ').strip()
             if option == '0':
                 break
@@ -87,6 +88,13 @@ def AS_CLI(networks, ASes, AS):
                     plot_topology(AS)
                 except Exception as e:
                     output(f'Drawing failed: {e}\n')
+            # The export only works correctly for unique routes
+            # The link parameters have to be set in such a way that the routing protocol will only chose one path for all routes
+            elif option == '5':
+                try:
+                    export_routing_tables(AS)
+                except Exception as e:
+                    output(f'Export failed: {e}\n')
             else:
                 output('Invalid option\n')
         except (Exception, KeyboardInterrupt):

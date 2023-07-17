@@ -2,7 +2,47 @@
 import json
 from pathlib import Path
 from mininet.log import lg, info, output, error
+from python.topology.common import TopoID
 
+def get_ip_node_mapping(AS):
+    net = AS.net
+    mapping = {}
+    for node in net.hosts:
+        for intf in node.intfList():
+            mapping[intf.IP()] = node.name
+    return mapping
+            
+def get_routing_table(node, mapping):
+    result = {}
+    raw_table = node.cmd('ip r').split('\n')
+    for line in raw_table:
+        if line:
+            parts = line.split(" ")
+            if parts[1] == "nhid":
+                interface = parts[6]
+            if parts[1] == "dev":
+                interface = parts[2]
+            destination = parts[0]
+            ip = destination.split("/", 1)[0]
+            # Skip ip addresses of the border router egress interfaces
+            if ip in mapping:
+                name = mapping[ip]
+                if name != node.name:
+                    result[name] = interface
+    return result
+
+def export_routing_tables(AS):
+    info('---Exporting routing table entries of all Nodes in this AS---\n')
+    result = {}
+    net = AS.net
+    mapping = get_ip_node_mapping(AS)
+    for node in net.hosts:
+        result[node.name] = get_routing_table(node, mapping)
+    AS_folder = TopoID(AS.ISD_AS_id).AS_file()
+    file = Path(AS.gen_dir, AS_folder, "routing-tables.json")
+    with open(file, 'w') as f:
+        json.dump(result, f, indent=4)
+    info(f'---Exported routing table entries to {file} ---\n')
 
 def get_sciond_addresses(AS):
     """Reads the sciond addresses from the sciond_addresses.json file"""

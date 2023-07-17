@@ -115,9 +115,9 @@ class Intra_AS_Topo(Topo):
                     bw = None
                     error(f'Bandwidth limit {bw} is outside supported range 0..1000 - ignoring\n')
             if delay is not None:
-                delay = float(delay)
+                delay = int(delay)
             if jitter is not None:
-                jitter = float(jitter)
+                jitter = int(jitter)
             if loss is not None:
                 loss = float(loss)
                 if loss and (loss < 0 or loss > 100):
@@ -127,7 +127,7 @@ class Intra_AS_Topo(Topo):
                 mtu = int(mtu)
 
             self.addLink(node_a, node_b,
-                         bw=None, delay=None, jitter=None, loss=None,
+                         bw=bw , delay=f'{delay}ms' if delay != None else None, jitter= f'{jitter}ms' if jitter != None else None, loss=loss,
                          params1={'ip': a_addr},
                          params2={'ip': b_addr}
                          )
@@ -221,6 +221,9 @@ class AutonomousSystem(object):
                     bw_cmd = f" rate {bw + 1}Kbit" if bw != None else " rate 40Gbit"
                     bw_cmd_colibri_queue = f" rate {bw}Kbit ceil {bw + 1}Kbit" if bw != None else " rate 39Gbit ceil 40Gbit"
                     bw_cmd_default_queue = f" rate 1Kbit ceil {bw + 1}Kbit" if bw != None else " rate 1Gbit ceil 40Gbit"
+                    
+                    # Delete existing qdisc initiated by Mininet if there is one
+                    cmds += ["sudo tc qdisc del dev %s root"]
                     
                     # Set up the new root HTB qdisc with bandwidth limit
                     cmds += ['sudo tc qdisc add dev %s root handle 1: htb default 20',
