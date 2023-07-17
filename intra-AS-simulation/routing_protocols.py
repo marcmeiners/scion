@@ -228,26 +228,24 @@ class ISIS(object):
 
         config = f"hostname {name}"
         config += "\npassword scion"
-
+        
         for intf in node.intfList():
             cost = ISIS.calc_cost(intf.params)
             config += f"\n\ninterface {intf.name}"
             config += "\n\tip router isis 0"
-            config += "\n\tisis circuit-type level-1"
             config += f"\n\tisis metric {cost}"
 
         config += "\n\nrouter isis 0"
         config += f"\n\tnet {self.create_net_address(node)}"
-        config += "\n\t\tis-type level-1"
+        config += "\n\tmetric-style wide"
 
         with open(config_file, mode='w') as f:
             f.writelines(config)
 
         return config_file
     
-    #TODO: calculate metric/cost according to paper
     @staticmethod
     def calc_cost(params):
-        cost = OSPF.calc_cost(params)
-        cost = cost / 65535 * 16777214
+        cost = float(OSPF.calc_cost(params))
+        cost = int(cost / 65535 * 16777214)
         return cost
