@@ -1,4 +1,4 @@
---- # 2 AS topology, IPv4 Only
+--- # Intra-AS routing Protocol Evaluation, IPv4 Only
 ASes:
   "1-ff00:0:110":
     core: true
