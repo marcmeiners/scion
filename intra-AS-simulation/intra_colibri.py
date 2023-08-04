@@ -18,7 +18,7 @@ class IntraColibri(object):
     
     def initiatePath(self, path, label, tos):
         lastNodeIP = self.net.getNodeByName(path[-1]).intfList()[0].IP()
-        #for paths of lentgh > 2 this loop is executed minimum one time - shorter paths are not allowed anyways
+        # For paths of lentgh > 2 this loop is executed minimum one time - shorter paths are not allowed anyways
         for i in range(1, len(path)-1):
             node = self.net.getNodeByName(path[i])
             prev_node = self.net.getNodeByName(path[i-1])
@@ -41,9 +41,9 @@ class IntraColibri(object):
                         mpls_label {label} \
                         action mpls pop protocol ip \
                         action mirred egress redirect dev {egress_intf}")
-                # The Mac source and destination address have to be changed before the packets returns to normal ip traffic
-                # Otherwise the packet gets dropped at the destination BR because it's source and destination addresses 
-                # are still equal to the first hop before setting the mpls header
+                # The Mac source and destination addresses have to be corrected before the packets returns to normal IP traffic
+                # Otherwise the packet gets dropped at the destination BR because its source and destination addresses 
+                # are still equal to the first hop before pushing the mpls label
                 node.cmd(f"tc filter add dev {egress_intf} protocol ip parent 1: flower \
                         ip_tos {tos}/0xff \
                         action pedit ex munge eth dst set {new_dst_mac} \
@@ -58,15 +58,14 @@ class IntraColibri(object):
                                 ip_tos {tos}/0xff \
                                 action mpls push protocol mpls_uc label {label}  \
                                 action mirred egress redirect dev {egress_intf}")
-                # Inner-Path node case
+                # Inner-path node case
                 else:
                     # If the packet has a specific mpls label, redirect it acording to the given colibri path
                     node.cmd(f"tc qdisc add dev {ingress_intf} handle ffff: ingress")
                     node.cmd(f"tc filter add dev {ingress_intf} protocol mpls_uc parent ffff: flower \
                                 mpls_label {label} \
                                 action mirred egress redirect dev {egress_intf}")
-                    # Set up filters that read TOS values and put the packets in the correct queues of the second last node
-                    # just before they arrive at the border router
+                    # Filter that puts mpls packets in correct queue
                     node.cmd(f"tc filter add dev {egress_intf} protocol mpls_uc parent 1: flower \
                             mpls_label {label} \
                             action flowid 1:10")

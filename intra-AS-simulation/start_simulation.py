@@ -106,7 +106,6 @@ class SCIONTopology(object):
                 border_routers = list(intra_topo_dict['Nodes']['Borderrouter'])
                 assert len(colibri_path) > 1, "a colibri path must be of minimum lentgh 2"
                 assert colibri_path[0] in border_routers and colibri_path[-1] in border_routers, "Paths must start and end with a border router"         
-                # TODO: Add condition: paths with same start and end router must contain distinct non-br-nodes
 
         return intra_topo_dict
 

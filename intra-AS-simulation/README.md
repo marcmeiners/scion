@@ -1,23 +1,77 @@
 # INTRA-AS SIMULATION
 
-## Requirements
-
-- Install SCION according to the official documentation,
-    see [here](../doc/build/setup.rst) for detailed instructions.
-
-- Clone SCION-Apps repository (<https://github.com/netsec-ethz/scion-apps>)
-    and build it according to their README.md
-
 ## Installation
+For the intra-AS simulation framework to work properly, a fresh Ubuntu 20.04 system is required. 
 
-- run install_deps.sh
+### Create scion user and clone SCION
 
-    ```bash
-    ./install_deps.sh
-    ```
+    $ adduser scion
+    $ usermod -aG sudo scion
+    $ su scion
+    $ cd
+    $ git clone https://github.com/marcmeiners/scion
+    $ cd scion
+    $ git checkout mmeiners/intra_AS_simulation
+    $ sudo apt update
+    $ ./tools/install_bazel
+    $ ./env/deps
 
-    - this will install routing protocols and other dependencies needed to run the intra-AS simulation
+### Install Docker
 
+    $ sudo snap refresh snapd
+    $ sudo snap install docker
+    $ sudo apt-get install docker-compose
+    $ sudo usermod -a -G docker scion
+
+### Install Python
+
+    $ sudo apt-get install python    
+
+### Install Supervisor
+
+    $ sudo apt-get install supervisor -y
+    $ pip install supervisor-wildcards
+
+### Python modules
+
+    $ pip3 install networkx
+
+### Install and build Bazel
+
+    $ cd ..
+    $ wget https://github.com/bazelbuild/bazelisk/releases/download/v1.8.1/bazelisk-linux-amd64
+    chmod +x bazelisk-linux-amd64
+    $ sudo mv bazelisk-linux-amd64 /usr/local/bin/bazel
+    $ which bazel
+    $ cd scion
+    $ sudo ./scion.sh bazel_remote
+
+### Build SCION
+
+    $ ./scion.sh topology
+
+### Install SCION Apps
+
+> Make sure SCION apps is cloned into the same folder as SCION: \
+> -folder \
+> --scion \
+> --scion-apps
+
+    $ cd
+    $ git clone https://github.com/marcmeiners/scion-apps
+    $ cd scion-apps
+    $ git checkout mmeiners/intra_AS_simulation
+    $ sudo snap install go --channel=1.16/stable --classic
+    $ sudo apt-get install -y libpam0g-dev
+    $ make setup_lint
+    $ make
+    $ make install
+
+### Install SCION intra requirements
+
+    $ cd ~/scion
+    $ ./intra-AS-simulation/install_deps.sh
+    $ sudo reboot
 ## Usage
 
 - Whole usage can be done with the helper script `scion-intra.sh` in the root directory of this repo.

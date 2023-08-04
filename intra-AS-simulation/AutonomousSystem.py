@@ -187,8 +187,7 @@ class AutonomousSystem(object):
         self.setup_qdisc_system()
         self.start_intra_routing_protocol()
 
-    # add qdiscs which give colibri packets precedence and add link attributes manually 
-    # this function can only be executed once the mininet network has been started       
+    # Add qdiscs which give colibri and ntp packets precedence and add link attributes 
     def setup_qdisc_system(self):
         for a, a_conf in self.intra_topo.intra_links.items():
             node_a = self.net.get(a)
@@ -215,8 +214,9 @@ class AutonomousSystem(object):
                     
                     cmds = [] 
                     
-                    # Bandwith is provided in Mbit - convert it to Kbit and subtract 1 Kbit for the default queue
-                    # the 'rate' specifies the guaranteed bandwith - so if we set it that way it means that colibri packets are just always capable to use (almost) the whole bandwith of the link (it's not allowed to set the rate to 0)
+                    # Bandwidth is provided in Mbit - convert it to Kbit and subtract 1 Kbit for the default queue
+                    # The 'rate' specifies the guaranteed bandwidth - so if we set it that way it means that colibri/ntp 
+                    # packets are always capable to use (almost) the whole bandwith of the link (it is not allowed to set the rate to 0)
                     bw = bw * 1000 - 1 if bw != None else None
                     bw_cmd = f" rate {bw + 1}Kbit" if bw != None else " rate 40Gbit"
                     bw_cmd_colibri_queue = f" rate {bw}Kbit ceil {bw + 1}Kbit" if bw != None else " rate 39Gbit ceil 40Gbit"
@@ -229,7 +229,7 @@ class AutonomousSystem(object):
                     cmds += ['sudo tc qdisc add dev %s root handle 1: htb default 20',
                             'sudo tc class add dev %s parent 1: classid 1:1 htb' + bw_cmd]
                     
-                    # Set up two child classes, one for regular traffic (1:20) and one for colibri traffic (1:10)
+                    # Set up two child classes, one for regular traffic (1:20) and one for colibri/ntp traffic (1:10)
                     cmds += ['tc class add dev %s parent 1:1 classid 1:10 htb prio 1' + bw_cmd_colibri_queue,
                             'tc class add dev %s parent 1:1 classid 1:20 htb prio 2' + bw_cmd_default_queue] 
                         
@@ -243,8 +243,8 @@ class AutonomousSystem(object):
                         cmds += ['sudo tc qdisc add dev %s parent 1:10 netem ' + netems,
                                 'sudo tc qdisc add dev %s parent 1:20 netem ' + netems] 
                         
-                    # Set up filters that read TOS values and put the packets in the correct queues
-                    # For all other TOS values, the default class is chosen as defined above
+                    # Set up filters that read ToS values and put the packets in the correct queues
+                    # For all other ToS values, the default class is chosen as defined above
                     cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x09/0xff flowid 1:10']
                     cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x10/0xff flowid 1:10']
                     cmds +=['sudo tc filter add dev %s protocol ip parent 1: flower ip_tos 0x11/0xff flowid 1:10']
