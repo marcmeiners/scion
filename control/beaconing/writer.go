@@ -53,6 +53,20 @@ type SegmentStore interface {
 	StoreSegs(context.Context, []*seg.Meta) (seghandler.SegStats, error)
 }
 
+type localIAExtender interface {
+	LocalIA() addr.IA
+}
+
+func localIAFromExtender(ext Extender) (addr.IA, bool) {
+	if ext == nil {
+		return 0, false
+	}
+	if provider, ok := ext.(localIAExtender); ok {
+		return provider.LocalIA(), true
+	}
+	return 0, false
+}
+
 // RPC registers the path segment with the remote.
 type RPC interface {
 	RegisterSegment(ctx context.Context, meta seg.Meta, remote net.Addr) error
@@ -461,6 +475,13 @@ func (w *GroupWriter) processSegments(
 			// If the beacon does not have a valid interface ID, skip it.
 			if w.Intfs != nil && w.Intfs.Get(b.InIfID) == nil {
 				continue
+			}
+			// Skip beacons that do not target the local IA for the configured extender.
+			if target, ok := localIAFromExtender(w.Extender); ok {
+				maxIdx := b.Segment.MaxIdx()
+				if maxIdx >= 0 && !b.Segment.ASEntries[maxIdx].Next.Equal(target) {
+					continue
+				}
 			}
 			// Try to terminate the segment if an extender is configured.
 			if w.Extender != nil {

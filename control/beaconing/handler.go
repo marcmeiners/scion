@@ -44,12 +44,12 @@ type BeaconInserter interface {
 
 // Handler handles beacons.
 type Handler struct {
-	LocalIA    addr.IA
-	Inserter   BeaconInserter
-	Verifier   infra.Verifier
-	Interfaces *ifstate.Interfaces
-
-	BeaconsHandled metrics.Counter
+	LocalIA            addr.IA
+	AdditionalLocalIAs []addr.IA
+	Inserter           BeaconInserter
+	Verifier           infra.Verifier
+	Interfaces         *ifstate.Interfaces
+	BeaconsHandled     metrics.Counter
 }
 
 // HandleBeacon handles a beacon received from peer.
@@ -110,15 +110,42 @@ func (h Handler) validateASEntry(b beacon.Beacon, intf *ifstate.Interface) error
 			"ingress_interface", b.InIfID, "link_type", topoInfo.LinkType)
 	}
 	asEntry := b.Segment.ASEntries[b.Segment.MaxIdx()]
-	if !asEntry.Local.Equal(topoInfo.IA) {
+	if !matchesInterfaceIA(asEntry.Local, topoInfo) {
 		return serrors.New("invalid upstream ISD-AS",
 			"expected", topoInfo.IA, "actual", asEntry.Local)
 	}
-	if !asEntry.Next.Equal(h.LocalIA) {
+	if !h.matchesLocalIA(asEntry.Next) {
 		return serrors.New("next ISD-AS of upstream AS entry does not match local ISD-AS",
 			"expected", h.LocalIA, "actual", asEntry.Next)
 	}
 	return nil
+}
+
+func matchesInterfaceIA(actual addr.IA, topoInfo ifstate.InterfaceInfo) bool {
+	if actual.Equal(topoInfo.IA) {
+		return true
+	}
+	if actual.AS() != topoInfo.IA.AS() {
+		return false
+	}
+	for _, isd := range topoInfo.PrivateISDs {
+		if actual.ISD() == isd {
+			return true
+		}
+	}
+	return false
+}
+
+func (h Handler) matchesLocalIA(ia addr.IA) bool {
+	if h.LocalIA.Equal(ia) {
+		return true
+	}
+	for _, candidate := range h.AdditionalLocalIAs {
+		if candidate.Equal(ia) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h Handler) verifySegment(ctx context.Context, segment *seg.PathSegment,

@@ -54,6 +54,7 @@ type TasksConfig struct {
 	AllInterfaces         *ifstate.Interfaces
 	PropagationInterfaces func() []*ifstate.Interface
 	OriginationInterfaces func() []*ifstate.Interface
+	PrivateISD            addr.ISD
 	TrustDB               trust.DB
 	PathDB                pathdb.DB
 	RevCache              revcache.RevCache
@@ -64,6 +65,8 @@ type TasksConfig struct {
 	Inspector             trust.Inspector
 	Metrics               *Metrics
 	DRKeyEngine           *drkey.ServiceEngine
+	//Skip segment creation
+	BeaconOnly bool
 
 	MACGen        func() hash.Hash
 	StaticInfo    func() *beaconing.StaticInfoCfg
@@ -253,6 +256,7 @@ func (t *TasksConfig) extender(
 
 	return &beaconing.DefaultExtender{
 		IA:                   ia,
+		PrivateISD:           t.PrivateISD,
 		SignerGen:            t.SignerGen,
 		MAC:                  t.MACGen,
 		Intfs:                t.AllInterfaces,
@@ -315,14 +319,18 @@ type Tasks struct {
 
 func StartTasks(cfg TasksConfig) (*Tasks, error) {
 
-	segCleaner := pathdb.NewCleaner(cfg.PathDB, "control_pathstorage_segments")
-	segRevCleaner := revcache.NewCleaner(cfg.RevCache, "control_pathstorage_revocation")
-	return &Tasks{
-		Originator: cfg.Originator(),
-		Propagator: cfg.Propagator(),
-		Registrars: cfg.SegmentWriters(),
+	var (
+		pathCleaner   *periodic.Runner
+		drkeyPrefetch *periodic.Runner
+		drkeyCleaners []*periodic.Runner
+	)
+	var registrars []*periodic.Runner
+	// Start this stuff only for public isd instances of the class
+	if !cfg.BeaconOnly {
+		segCleaner := pathdb.NewCleaner(cfg.PathDB, "control_pathstorage_segments")
+		segRevCleaner := revcache.NewCleaner(cfg.RevCache, "control_pathstorage_revocation")
 		//nolint:staticcheck // SA1019: fix later (https://github.com/scionproto/scion/issues/4776).
-		PathCleaner: periodic.Start(
+		pathCleaner = periodic.Start(
 			periodic.Func{
 				Task: func(ctx context.Context) {
 					segCleaner.Run(ctx)
@@ -332,9 +340,18 @@ func StartTasks(cfg TasksConfig) (*Tasks, error) {
 			},
 			10*time.Second,
 			10*time.Second,
-		),
-		DRKeyPrefetcher: cfg.DRKeyPrefetcher(),
-		DRKeyCleaners:   cfg.DRKeyCleaners(),
+		)
+		drkeyPrefetch = cfg.DRKeyPrefetcher()
+		drkeyCleaners = cfg.DRKeyCleaners()
+		registrars = cfg.SegmentWriters()
+	}
+	return &Tasks{
+		Originator:      cfg.Originator(),
+		Propagator:      cfg.Propagator(),
+		Registrars:      registrars,
+		PathCleaner:     pathCleaner,
+		DRKeyPrefetcher: drkeyPrefetch,
+		DRKeyCleaners:   drkeyCleaners,
 	}, nil
 
 }

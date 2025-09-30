@@ -129,6 +129,13 @@ func (l *Loader) Core() bool {
 	return l.topo.Core()
 }
 
+func (l *Loader) PrivateISDMemberships() []PrivateISDMembership {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+
+	return copyPrivateMemberships(l.topo.PrivateISDMemberships())
+}
+
 func (l *Loader) UnderlayNextHop(ifID uint16) *net.UDPAddr {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()

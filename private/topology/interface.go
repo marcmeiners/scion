@@ -38,6 +38,8 @@ type Topology interface {
 	MTU() uint16
 	// Core returns whether the local AS is core.
 	Core() bool
+	// PrivateISDMemberships returns the configured private ISDs for the AS.
+	PrivateISDMemberships() []PrivateISDMembership
 	// InterfaceIDs returns all interface IDS from the local AS.
 	IfIDs() []iface.ID
 	// PortRange returns the first and last ports of the port range (both included),
@@ -180,6 +182,10 @@ func (t *topologyS) MakeHostInfos(st ServiceType) ([]*net.UDPAddr, error) {
 
 func (t *topologyS) Core() bool {
 	return t.Topology.IsCore
+}
+
+func (t *topologyS) PrivateISDMemberships() []PrivateISDMembership {
+	return copyPrivateMemberships(t.Topology.PrivateISDs)
 }
 
 func (t *topologyS) Gateways() ([]GatewayInfo, error) {

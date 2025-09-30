@@ -31,6 +31,7 @@ import (
 )
 
 // LoadTrustMaterial loads the trust material from disk. The logger must not be nil.
+// Regarding Private ISDs: This already loads all TRC files present in the folder by default
 func LoadTrustMaterial(ctx context.Context, configDir string, db trust.DB) error {
 	logger := log.FromCtx(ctx)
 	certsDir := filepath.Join(configDir, "certs")

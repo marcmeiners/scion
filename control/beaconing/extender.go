@@ -66,6 +66,9 @@ type Extender interface {
 type DefaultExtender struct {
 	// IA is the local IA
 	IA addr.IA
+	// PrivateISD selects the private ISD membership that should be used when extending.
+	// A zero value means the public ISD is used.
+	PrivateISD addr.ISD
 	// SignerGen is used to sign path segments.
 	SignerGen SignerGen
 	// MAC is used to calculate the hop field MAC.
@@ -90,6 +93,10 @@ type DefaultExtender struct {
 	// is below the maximum expiration time. This happens when the signer expiration time is lower
 	// than the maximum segment expiration time.
 	SegmentExpirationDeficient metrics.Gauge
+}
+
+func (s *DefaultExtender) LocalIA() addr.IA {
+	return s.IA
 }
 
 // Extend extends the beacon with hop fields.
@@ -287,10 +294,7 @@ func (s *DefaultExtender) remoteIA(ifID uint16) (addr.IA, error) {
 		return 0, serrors.New("interface not found")
 	}
 	topoInfo := intf.TopoInfo()
-	if topoInfo.IA.IsWildcard() {
-		return 0, serrors.New("remote is wildcard", "isd_as", topoInfo.IA)
-	}
-	return topoInfo.IA, nil
+	return remoteIAForInterface(topoInfo, s.PrivateISD)
 }
 
 func (s *DefaultExtender) remoteMTU(ifID uint16) (uint16, error) {
@@ -319,10 +323,11 @@ func (s *DefaultExtender) remoteInfo(ifID uint16) (
 	if topoInfo.RemoteID == 0 {
 		return 0, 0, 0, serrors.New("remote interface ID is not set")
 	}
-	if topoInfo.IA.IsWildcard() {
-		return 0, 0, 0, serrors.New("remote ISD-AS is wildcard", "isd_as", topoInfo.IA)
+	ia, err := remoteIAForInterface(topoInfo, s.PrivateISD)
+	if err != nil {
+		return 0, 0, 0, err
 	}
-	return topoInfo.IA, topoInfo.RemoteID, topoInfo.MTU, nil
+	return ia, topoInfo.RemoteID, topoInfo.MTU, nil
 }
 
 func (s *DefaultExtender) createHopF(ingress, egress uint16, expTime uint8, ts time.Time,
@@ -358,4 +363,36 @@ func extractBeta(pseg *seg.PathSegment) uint16 {
 		beta = beta ^ sigma
 	}
 	return beta
+}
+
+// Either take remote IA directly from interface info or otherwise build it from the as name of the remote as and the private isd number we got from the task config
+func remoteIAForInterface(info ifstate.InterfaceInfo, privateISD addr.ISD) (addr.IA, error) {
+	if privateISD == 0 {
+		if info.IA.IsWildcard() {
+			return 0, serrors.New("remote is wildcard", "isd_as", info.IA)
+		}
+		return info.IA, nil
+	}
+	if !supportsPrivateISD(info, privateISD) {
+		return 0, serrors.New("interface does not support private ISD",
+			"interface_id", info.ID, "private_isd", privateISD)
+	}
+	remote, err := addr.IAFrom(privateISD, info.IA.AS())
+	if err != nil {
+		return 0, serrors.Wrap("deriving remote private IA", err,
+			"private_isd", privateISD, "remote_as", info.IA.AS())
+	}
+	return remote, nil
+}
+
+func supportsPrivateISD(info ifstate.InterfaceInfo, isd addr.ISD) bool {
+	if isd == 0 {
+		return true
+	}
+	for _, candidate := range info.PrivateISDs {
+		if candidate == isd {
+			return true
+		}
+	}
+	return false
 }

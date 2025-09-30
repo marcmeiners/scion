@@ -271,12 +271,22 @@ func realMain(ctx context.Context) error {
 		QueriesTotal: libmetrics.NewPromCounter(metrics.BeaconDBQueriesTotal),
 	})
 
-	policies, err := loadPolicies(topo.Core(), globalCfg.BS.Policies)
+	corePolicies, err := cs.LoadCorePolicies(globalCfg.BS.Policies)
 	if err != nil {
-		return serrors.Wrap("loading policies", err)
+		return serrors.Wrap("loading core policies", err)
 	}
-	beaconStore, isdLoopAllowed, err := createBeaconStore(
-		policies,
+	nonCorePolicies, err := cs.LoadNonCorePolicies(globalCfg.BS.Policies)
+	if err != nil {
+		return serrors.Wrap("loading non-core policies", err)
+	}
+	basePolicies := loadedPolicies{}
+	if topo.Core() {
+		basePolicies.CorePolicies = &corePolicies
+	} else {
+		basePolicies.NonCorePolicies = &nonCorePolicies
+	}
+	baseStore, baseAllowLoop, err := createBeaconStore(
+		basePolicies,
 		beaconDB,
 		trust.FetchingProvider{
 			DB:       trustDB,
@@ -288,6 +298,71 @@ func realMain(ctx context.Context) error {
 	)
 	if err != nil {
 		return serrors.Wrap("initializing beacon store", err)
+	}
+	multiInserter := newMultiBeaconInserter(beaconDB, &corePolicies, &nonCorePolicies)
+
+	// Define array of environments for all ISD memberships: BeaconOnly means that we don't store segments for now
+	// We did not tell path DB, lookup procedure and dataplane how to discover and select private ISD segments yes
+	membershipEnvs := []membershipEnv{
+		{
+			IA:           topo.IA(),
+			Core:         topo.Core(),
+			Store:        baseStore,
+			AllowIsdLoop: baseAllowLoop,
+			Policies:     basePolicies,
+			BeaconOnly:   false,
+			IsPrivate:    false,
+		},
+	}
+	for _, pm := range topo.PrivateISDMemberships() {
+		ia, err := addr.IAFrom(pm.ISD, topo.IA().AS())
+		if err != nil {
+			return serrors.Wrap("deriving private IA", err, "isd", pm.ISD, "as", topo.IA().AS())
+		}
+		pol := loadedPolicies{}
+		if pm.Core {
+			pol.CorePolicies = &corePolicies
+		} else {
+			pol.NonCorePolicies = &nonCorePolicies
+		}
+		//Create one Beacon Store per ISD membership
+		store, allow, err := createBeaconStore(
+			pol,
+			beaconDB,
+			trust.FetchingProvider{
+				DB:       trustDB,
+				Recurser: trust.NeverRecurser{},
+			},
+		)
+		if err != nil {
+			return serrors.Wrap("initializing private beacon store", err, "isd", pm.ISD)
+		}
+		membershipEnvs = append(membershipEnvs, membershipEnv{
+			IA:           ia,
+			Core:         pm.Core,
+			Store:        store,
+			AllowIsdLoop: allow,
+			Policies:     pol,
+			BeaconOnly:   true,
+			IsPrivate:    true,
+			PrivateISD:   pm.ISD,
+			CertIssuer:   pm.CertIssuer,
+		})
+	}
+	ctxSigner, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	signer := cs.NewSigner(ctxSigner, topo.IA(), trustDB, globalCfg.General.ConfigDir)
+	for i := range membershipEnvs {
+		env := &membershipEnvs[i]
+		if env.IA == topo.IA() {
+			env.Signer = signer
+			continue
+		}
+		env.Signer = cs.NewSigner(ctxSigner, env.IA, trustDB, globalCfg.General.ConfigDir)
+	}
+	privateIAs := make([]addr.IA, 0, len(membershipEnvs)-1)
+	for _, env := range membershipEnvs[1:] {
+		privateIAs = append(privateIAs, env.IA)
 	}
 
 	trustengineCache := globalCfg.TrustEngine.Cache.New()
@@ -382,11 +457,12 @@ func realMain(ctx context.Context) error {
 	// Handle beaconing.
 	segmentCreationServer := &beaconinggrpc.SegmentCreationServer{
 		Handler: &beaconing.Handler{
-			LocalIA:        topo.IA(),
-			Inserter:       beaconStore,
-			Interfaces:     intfs,
-			Verifier:       verifier,
-			BeaconsHandled: libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
+			LocalIA:            topo.IA(),
+			AdditionalLocalIAs: privateIAs,
+			Inserter:           multiInserter,
+			Interfaces:         intfs,
+			Verifier:           verifier,
+			BeaconsHandled:     libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
 		},
 	}
 	cppb.RegisterSegmentCreationServiceServer(quicServer, segmentCreationServer)
@@ -455,10 +531,6 @@ func realMain(ctx context.Context) error {
 			segregconnect.RegistrationServer{RegistrationServer: registrationServer},
 		))
 	}
-
-	ctxSigner, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	signer := cs.NewSigner(ctxSigner, topo.IA(), trustDB, globalCfg.General.ConfigDir)
 
 	var chainBuilder renewal.ChainBuilder
 	var caClient *caapi.Client
@@ -877,24 +949,6 @@ func realMain(ctx context.Context) error {
 		log.Info("No static info file found. Static info settings disabled.", "err", err)
 	}
 
-	var propagationFilter func(intf *ifstate.Interface) bool
-	if topo.Core() {
-		propagationFilter = func(intf *ifstate.Interface) bool {
-			topoInfo := intf.TopoInfo()
-			return topoInfo.LinkType == topology.Core
-		}
-	} else {
-		propagationFilter = func(intf *ifstate.Interface) bool {
-			topoInfo := intf.TopoInfo()
-			return topoInfo.LinkType == topology.Child
-		}
-	}
-
-	originationFilter := func(intf *ifstate.Interface) bool {
-		topoInfo := intf.TopoInfo()
-		return topoInfo.LinkType == topology.Core || topoInfo.LinkType == topology.Child
-	}
-
 	rpc := &happy.Registrar{
 		Connect: beaconingconnect.Registrar{
 			Dialer: (&squic.EarlyDialerFactory{
@@ -908,80 +962,6 @@ func realMain(ctx context.Context) error {
 			}).NewDialer,
 		},
 		Grpc: beaconinggrpc.Registrar{Dialer: dialer},
-	}
-	tc := cs.TasksConfig{
-		IA:            topo.IA(),
-		Core:          topo.Core(),
-		MTU:           topo.MTU(),
-		Public:        nc.Public,
-		AllInterfaces: intfs,
-		PropagationInterfaces: func() []*ifstate.Interface {
-			return intfs.Filtered(propagationFilter)
-		},
-		OriginationInterfaces: func() []*ifstate.Interface {
-			return intfs.Filtered(originationFilter)
-		},
-		TrustDB:  trustDB,
-		PathDB:   pathDB,
-		RevCache: revCache,
-		BeaconSenderFactory: &happy.BeaconSenderFactory{
-			Connect: &beaconingconnect.BeaconSenderFactory{
-				Dialer: (&squic.EarlyDialerFactory{
-					Transport: quicStack.InsecureDialer.Transport,
-					TLSConfig: func() *tls.Config {
-						cfg := quicStack.InsecureDialer.TLSConfig.Clone()
-						cfg.NextProtos = []string{"h3", "SCION"}
-						return cfg
-					}(),
-					Rewriter: dialer.Rewriter,
-				}).NewDialer,
-			},
-			Grpc: &beaconinggrpc.BeaconSenderFactory{
-				Dialer: dialer,
-			},
-		},
-		SegmentRegister: rpc,
-		BeaconStore:     beaconStore,
-		SignerGen: beaconing.SignerGenFunc(func(ctx context.Context) ([]beaconing.Signer, error) {
-			signers, err := signer.SignerGen.Generate(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if len(signers) == 0 {
-				return nil, nil
-			}
-			r := make([]beaconing.Signer, 0, len(signers))
-			for _, s := range signers {
-				r = append(r, s)
-			}
-			return r, nil
-		}),
-		Inspector:   inspector,
-		Metrics:     metrics,
-		DRKeyEngine: drkeyEngine,
-		MACGen:      macGen,
-		NextHopper:  topo,
-		StaticInfo:  func() *beaconing.StaticInfoCfg { return staticInfo },
-
-		DiscoveryInfo: func() *discoveryext.Extension {
-			cses := topo.ControlServiceAddresses()
-			addrs := make([]netip.AddrPort, 0, len(cses))
-			for _, cs := range cses {
-				addrs = append(addrs, cs.AddrPort())
-			}
-			return &discoveryext.Extension{
-				ControlServices:   addrs,
-				DiscoveryServices: addrs,
-			}
-		},
-
-		OriginationInterval:       globalCfg.BS.OriginationInterval.Duration,
-		PropagationInterval:       globalCfg.BS.PropagationInterval.Duration,
-		RegistrationInterval:      globalCfg.BS.RegistrationInterval.Duration,
-		DRKeyEpochInterval:        epochDuration,
-		HiddenPathRegistrationCfg: hpWriterCfg,
-		AllowIsdLoop:              isdLoopAllowed,
-		EPIC:                      globalCfg.BS.EPIC,
 	}
 
 	var internalErr, registered libmetrics.Counter
@@ -1041,15 +1021,104 @@ func realMain(ctx context.Context) error {
 	for _, plugin := range plugins {
 		segreg.RegisterSegmentRegPlugin(plugin)
 	}
-	if err := tc.InitPlugins(errCtx, policies.RegistrationPolicies()); err != nil {
-		return serrors.Wrap("initializing tasks plugins", err)
+	taskRunners := make([]*cs.Tasks, 0, len(membershipEnvs))
+	// Do the following for each AS membership (public, private):
+	// - Define originator and propagator filters
+	// - Define a Tasks Config and execute tasks and plugins for each membership individually
+	for idx := range membershipEnvs {
+		env := membershipEnvs[idx]
+		propFilter := newPropagationFilter(env.Core, env.IsPrivate, env.PrivateISD)
+		origFilter := newOriginationFilter(env.IsPrivate, env.PrivateISD)
+		signerRef := env.Signer
+		propFilterCopy := propFilter
+		origFilterCopy := origFilter
+		tc := cs.TasksConfig{
+			IA:            env.IA,
+			Core:          env.Core,
+			MTU:           topo.MTU(),
+			Public:        nc.Public,
+			AllInterfaces: intfs,
+			PropagationInterfaces: func() []*ifstate.Interface {
+				return intfs.Filtered(propFilterCopy)
+			},
+			OriginationInterfaces: func() []*ifstate.Interface {
+				return intfs.Filtered(origFilterCopy)
+			},
+			PrivateISD: env.PrivateISD,
+			TrustDB:    trustDB,
+			PathDB:     pathDB,
+			RevCache:   revCache,
+			BeaconSenderFactory: &happy.BeaconSenderFactory{
+				Connect: &beaconingconnect.BeaconSenderFactory{
+					Dialer: (&squic.EarlyDialerFactory{
+						Transport: quicStack.InsecureDialer.Transport,
+						TLSConfig: func() *tls.Config {
+							cfg := quicStack.InsecureDialer.TLSConfig.Clone()
+							cfg.NextProtos = []string{"h3", "SCION"}
+							return cfg
+						}(),
+						Rewriter: dialer.Rewriter,
+					}).NewDialer,
+				},
+				Grpc: &beaconinggrpc.BeaconSenderFactory{
+					Dialer: dialer,
+				},
+			},
+			SegmentRegister: rpc,
+			BeaconStore:     env.Store,
+			SignerGen: beaconing.SignerGenFunc(func(ctx context.Context) ([]beaconing.Signer, error) {
+				signers, err := signerRef.SignerGen.Generate(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if len(signers) == 0 {
+					return nil, nil
+				}
+				r := make([]beaconing.Signer, 0, len(signers))
+				for _, s := range signers {
+					r = append(r, s)
+				}
+				return r, nil
+			}),
+			Inspector:   inspector,
+			Metrics:     metrics,
+			DRKeyEngine: drkeyEngine,
+			MACGen:      macGen,
+			NextHopper:  topo,
+			StaticInfo:  func() *beaconing.StaticInfoCfg { return staticInfo },
+
+			DiscoveryInfo: func() *discoveryext.Extension {
+				cses := topo.ControlServiceAddresses()
+				addrs := make([]netip.AddrPort, 0, len(cses))
+				for _, cs := range cses {
+					addrs = append(addrs, cs.AddrPort())
+				}
+				return &discoveryext.Extension{
+					ControlServices:   addrs,
+					DiscoveryServices: addrs,
+				}
+			},
+
+			OriginationInterval:       globalCfg.BS.OriginationInterval.Duration,
+			PropagationInterval:       globalCfg.BS.PropagationInterval.Duration,
+			RegistrationInterval:      globalCfg.BS.RegistrationInterval.Duration,
+			DRKeyEpochInterval:        epochDuration,
+			HiddenPathRegistrationCfg: hpWriterCfg,
+			AllowIsdLoop:              env.AllowIsdLoop,
+			EPIC:                      globalCfg.BS.EPIC,
+			BeaconOnly:                env.BeaconOnly,
+		}
+		if err := tc.InitPlugins(errCtx, env.Policies.RegistrationPolicies()); err != nil {
+			return serrors.Wrap("initializing tasks plugins", err, "ia", env.IA)
+		}
+		task, err := cs.StartTasks(tc)
+		if err != nil {
+			return serrors.Wrap("starting periodic tasks", err, "ia", env.IA)
+		}
+		taskRunners = append(taskRunners, task)
 	}
-	tasks, err := cs.StartTasks(tc)
-	if err != nil {
-		return serrors.Wrap("starting periodic tasks", err)
-	}
-	defer tasks.Kill()
-	log.Info("Started periodic tasks")
+	defer killTasks(taskRunners)
+	log.Info("Started periodic tasks", "memberships", len(taskRunners))
 
 	g.Go(func() error {
 		defer log.HandlePanic()
@@ -1072,25 +1141,17 @@ type loadedPolicies struct {
 	NonCorePolicies *beacon.Policies
 }
 
-// loadPolicies loads the policies based on the given policyConfig and
-// the core flag, which must be true iff the service is core.
-func loadPolicies(
-	core bool,
-	policyConfig config.Policies,
-) (loadedPolicies, error) {
-	if core {
-		policies, err := cs.LoadCorePolicies(policyConfig)
-		if err != nil {
-			return loadedPolicies{}, serrors.Wrap("loading core policies", err)
-		}
-		return loadedPolicies{CorePolicies: &policies}, nil
-	} else {
-		policies, err := cs.LoadNonCorePolicies(policyConfig)
-		if err != nil {
-			return loadedPolicies{}, serrors.Wrap("loading non-core policies", err)
-		}
-		return loadedPolicies{NonCorePolicies: &policies}, nil
-	}
+type membershipEnv struct {
+	IA           addr.IA
+	Core         bool
+	Store        cs.Store
+	AllowIsdLoop bool
+	Policies     loadedPolicies
+	BeaconOnly   bool
+	IsPrivate    bool
+	PrivateISD   addr.ISD
+	Signer       cstrust.RenewingSigner
+	CertIssuer   addr.IA
 }
 
 // RegistrationPolicies returns the policies that are used for segment registration.
@@ -1102,6 +1163,105 @@ func (l loadedPolicies) RegistrationPolicies() []beacon.Policy {
 		return []beacon.Policy{l.NonCorePolicies.UpReg, l.NonCorePolicies.DownReg}
 	default:
 		return nil
+	}
+}
+
+func newPropagationFilter(isCore, isPrivate bool, privateISD addr.ISD) func(*ifstate.Interface) bool {
+	return func(intf *ifstate.Interface) bool {
+		topoInfo := intf.TopoInfo()
+		if isPrivate && !interfaceSupportsPrivateISD(topoInfo, privateISD) {
+			return false
+		}
+		if isCore {
+			return topoInfo.LinkType == topology.Core
+		}
+		return topoInfo.LinkType == topology.Child
+	}
+}
+
+func newOriginationFilter(isPrivate bool, privateISD addr.ISD) func(*ifstate.Interface) bool {
+	return func(intf *ifstate.Interface) bool {
+		topoInfo := intf.TopoInfo()
+		if isPrivate && !interfaceSupportsPrivateISD(topoInfo, privateISD) {
+			return false
+		}
+		return topoInfo.LinkType == topology.Core || topoInfo.LinkType == topology.Child
+	}
+}
+
+func interfaceSupportsPrivateISD(info ifstate.InterfaceInfo, isd addr.ISD) bool {
+	if isd == 0 {
+		return true
+	}
+	for _, candidate := range info.PrivateISDs {
+		if candidate == isd {
+			return true
+		}
+	}
+	return false
+}
+
+type multiBeaconInserter struct {
+	db              beacon.DB
+	corePolicies    *beacon.CorePolicies
+	nonCorePolicies *beacon.Policies
+}
+
+func newMultiBeaconInserter(db beacon.DB, corePolicies *beacon.CorePolicies, nonCorePolicies *beacon.Policies) *multiBeaconInserter {
+	return &multiBeaconInserter{
+		db:              db,
+		corePolicies:    corePolicies,
+		nonCorePolicies: nonCorePolicies,
+	}
+}
+
+// Prefilter needs to be changed. e.g. an AS is core in one ISD and non-core in another
+// This is safe because later on we filter again on read, so we can apply both filters and add bits
+func (m *multiBeaconInserter) PreFilter(b beacon.Beacon) error {
+	allowed := false
+	var errs []error
+	if m.nonCorePolicies != nil {
+		if err := m.nonCorePolicies.Filter(b); err != nil {
+			errs = append(errs, err)
+		} else {
+			allowed = true
+		}
+	}
+	if m.corePolicies != nil {
+		if err := m.corePolicies.Filter(b); err != nil {
+			errs = append(errs, err)
+		} else {
+			allowed = true
+		}
+	}
+	if allowed {
+		return nil
+	}
+	if len(errs) == 0 {
+		return serrors.New("no beaconing policies configured")
+	}
+	return serrors.Wrap("beacon filtered by all policies", errs[0])
+}
+
+func (m *multiBeaconInserter) InsertBeacon(ctx context.Context, b beacon.Beacon) (beacon.InsertStats, error) {
+	var usage beacon.Usage
+	if m.nonCorePolicies != nil {
+		usage |= m.nonCorePolicies.Usage(b)
+	}
+	if m.corePolicies != nil {
+		usage |= m.corePolicies.Usage(b)
+	}
+	if usage.None() {
+		return beacon.InsertStats{Filtered: 1}, nil
+	}
+	return m.db.InsertBeacon(ctx, b, usage)
+}
+
+func killTasks(tasks []*cs.Tasks) {
+	for _, t := range tasks {
+		if t != nil {
+			t.Kill()
+		}
 	}
 }
 
@@ -1134,6 +1294,7 @@ func adaptInterfaceMap(in map[iface.ID]topology.IFInfo) map[uint16]ifstate.Inter
 			InternalAddr: info.InternalAddr,
 			RemoteID:     uint16(info.RemoteIfID),
 			MTU:          uint16(info.MTU),
+			PrivateISDs:  append([]addr.ISD(nil), info.PrivateISDs...),
 		}
 	}
 	return converted

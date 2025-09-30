@@ -240,6 +240,25 @@ class TopoGenerator(object):
         for attr in ['core']:
             if as_conf.get(attr, False):
                 attributes.append(attr)
+        private_isds = self._sanitize_private_isds(as_conf.get('private_isds'))
+        base_attrs = {
+            'core': bool(as_conf.get('core', False)),
+            'issuing': bool(as_conf.get('issuing', False)),
+            'voting': bool(as_conf.get('voting', False)),
+            'authoritative': bool(as_conf.get('authoritative', False)),
+            'cert_issuer': as_conf.get('cert_issuer'),
+        }
+        for entry in private_isds:
+            entry.setdefault('core', base_attrs['core'])
+            entry.setdefault('issuing', base_attrs['issuing'])
+            entry.setdefault('voting', base_attrs['voting'])
+            entry.setdefault('authoritative', base_attrs['authoritative'])
+            if entry.get('cert_issuer') is None and base_attrs['cert_issuer']:
+                entry['cert_issuer'] = base_attrs['cert_issuer']
+        if private_isds:
+            as_conf['private_isds'] = private_isds
+        else:
+            as_conf.pop('private_isds', None)
         self.topo_dicts[topo_id] = {
             'attributes': attributes,
             'isd_as': str(topo_id),
@@ -255,6 +274,8 @@ class TopoGenerator(object):
             'test_dispatcher': as_conf.get('test_dispatcher', True),
             'dispatched_ports': as_conf.get('dispatched_ports', self.args.dispatched_ports),
         }
+        if private_isds:
+            self.topo_dicts[topo_id]['private_isds'] = private_isds
         for i in SCION_SERVICE_NAMES:
             self.topo_dicts[topo_id][i] = {}
         self._gen_srv_entries(topo_id, as_conf)
@@ -312,6 +333,9 @@ class TopoGenerator(object):
         intl_addr = self._reg_addr(local, local_br + "_internal", addr_type)
 
         intf = self._gen_br_intf(remote, r_ifid, local_addr, remote_addr, attrs, remote_type)
+        shared_private_isds = self._shared_private_isds(local, remote)
+        if shared_private_isds:
+            intf['private_isds'] = shared_private_isds
 
         if self.topo_dicts[local]["border_routers"].get(local_br) is None:
             intl_port = 30042
@@ -343,6 +367,30 @@ class TopoGenerator(object):
             intf['remote_interface_id'] = r_ifid
         return intf
 
+    def _private_isds_for(self, topo_id):
+        as_conf = self.args.topo_config_dict["ASes"].get(str(topo_id), {})
+        entries = as_conf.get('private_isds', [])
+        result = set()
+        for entry in entries:
+            if isinstance(entry, dict):
+                isd_value = entry.get('isd')
+            else:
+                isd_value = entry
+            if isd_value is None:
+                continue
+            try:
+                result.add(int(isd_value))
+            except (TypeError, ValueError):
+                logging.critical("Invalid private ISD '%s' for %s", entry, topo_id)
+                sys.exit(1)
+        return result
+
+    def _shared_private_isds(self, local, remote):
+        local_set = self._private_isds_for(local)
+        remote_set = self._private_isds_for(remote)
+        shared = sorted(local_set & remote_set)
+        return shared
+
     def _gen_sig_entries(self, topo_id, as_conf):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
         elem_id = "sig" + topo_id.file_fmt()
@@ -355,6 +403,56 @@ class TopoGenerator(object):
             'data_addr': join_host_port(self._reg_addr(topo_id, reg_id, addr_type).ip, 30056),
         }
         self.topo_dicts[topo_id]['sigs'][elem_id] = d
+
+    def _sanitize_private_isds(self, raw):
+        if not raw:
+            return []
+        seen = {}
+        for value in raw:
+            if isinstance(value, dict):
+                isd_value = value.get('isd')
+                entry = {
+                    'core': bool(value.get('core', False)),
+                    'issuing': bool(value.get('issuing', False)),
+                    'voting': bool(value.get('voting', False)),
+                    'authoritative': bool(value.get('authoritative', False)),
+                    'cert_issuer': value.get('cert_issuer'),
+                }
+            else:
+                isd_value = value
+                entry = {
+                    'core': False,
+                    'issuing': False,
+                    'voting': False,
+                    'authoritative': False,
+                    'cert_issuer': None,
+                }
+            try:
+                isd = int(isd_value)
+            except (TypeError, ValueError):
+                logging.critical("Invalid private ISD '%s'", value)
+                sys.exit(1)
+            if isd < 16 or isd > 63:
+                logging.critical("Private ISD %s outside permitted range [16, 63]", isd)
+                sys.exit(1)
+            if isd not in seen:
+                seen[isd] = entry
+            else:
+                for key, val in entry.items():
+                    if key == 'cert_issuer':
+                        if seen[isd][key] is None and val:
+                            seen[isd][key] = val
+                    else:
+                        seen[isd][key] = seen[isd][key] or val
+        result = []
+        # Sorting the keys before emitting the list ensures we always write the memberships in the same order, which makes the generated topology and tests reproducible
+        for isd in sorted(seen):
+            entry = {'isd': isd, 'core': seen[isd]['core'], 'issuing': seen[isd]['issuing'],
+                     'voting': seen[isd]['voting'], 'authoritative': seen[isd]['authoritative']}
+            if seen[isd]['cert_issuer']:
+                entry['cert_issuer'] = seen[isd]['cert_issuer']
+            result.append(entry)
+        return result
 
     def _generate_as_list(self, topo_id, as_conf):
         if as_conf.get('core', False):

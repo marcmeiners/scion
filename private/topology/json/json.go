@@ -69,6 +69,53 @@ func (as *Attributes) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// PrivateISD describes the membership of an AS in a private ISD, including optional role overrides.
+type PrivateISD struct {
+	ISD           uint16 `json:"isd"`
+	Core          bool   `json:"core,omitempty"`
+	Issuing       bool   `json:"issuing,omitempty"`
+	Voting        bool   `json:"voting,omitempty"`
+	Authoritative bool   `json:"authoritative,omitempty"`
+	CertIssuer    string `json:"cert_issuer,omitempty"`
+}
+
+func (p *PrivateISD) UnmarshalJSON(b []byte) error {
+	var number uint16
+	if err := json.Unmarshal(b, &number); err == nil {
+		if number == 0 {
+			return serrors.New("private ISD must be non-zero")
+		}
+		p.ISD = number
+		p.Core = false
+		p.Issuing = false
+		p.Voting = false
+		p.Authoritative = false
+		p.CertIssuer = ""
+		return nil
+	}
+	var aux struct {
+		ISD           uint16 `json:"isd"`
+		Core          bool   `json:"core"`
+		Issuing       bool   `json:"issuing"`
+		Voting        bool   `json:"voting"`
+		Authoritative bool   `json:"authoritative"`
+		CertIssuer    string `json:"cert_issuer"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if aux.ISD == 0 {
+		return serrors.New("private ISD entry missing ISD")
+	}
+	p.ISD = aux.ISD
+	p.Core = aux.Core
+	p.Issuing = aux.Issuing
+	p.Voting = aux.Voting
+	p.Authoritative = aux.Authoritative
+	p.CertIssuer = aux.CertIssuer
+	return nil
+}
+
 // Topology is the JSON type for the entire AS topology file.
 type Topology struct {
 	Timestamp        int64  `json:"timestamp,omitempty"`
@@ -77,7 +124,9 @@ type Topology struct {
 	MTU              int    `json:"mtu"`
 	EndhostPortRange string `json:"dispatched_ports"`
 	// Attributes specify whether this is a core AS or not.
-	Attributes          Attributes              `json:"attributes"`
+	Attributes Attributes `json:"attributes"`
+	// PrivateISDs lists the private ISDs the AS participates in with optional role overrides.
+	PrivateISDs         []PrivateISD            `json:"private_isds,omitempty"`
 	BorderRouters       map[string]*BRInfo      `json:"border_routers,omitempty"`
 	ControlService      map[string]*ServerInfo  `json:"control_service,omitempty"`
 	DiscoveryService    map[string]*ServerInfo  `json:"discovery_service,omitempty"`
@@ -114,6 +163,8 @@ type BRInterface struct {
 	MTU        int      `json:"mtu"`
 	BFD        *BFD     `json:"bfd,omitempty"`
 	RemoteIfID iface.ID `json:"remote_interface_id,omitempty"`
+	// PrivateISDs lists the private ISDs shared with the remote interface.
+	PrivateISDs []uint16 `json:"private_isds,omitempty"`
 }
 
 // Underlay is the underlay information for a BR interface.
