@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"net/netip"
@@ -78,6 +79,7 @@ import (
 	dconnect "github.com/scionproto/scion/pkg/proto/discovery/v1/discoveryconnect"
 	"github.com/scionproto/scion/pkg/scrypto"
 	"github.com/scionproto/scion/pkg/scrypto/cppki"
+	seg "github.com/scionproto/scion/pkg/segment"
 	discoveryext "github.com/scionproto/scion/pkg/segment/extensions/discovery"
 	"github.com/scionproto/scion/pkg/segment/iface"
 	"github.com/scionproto/scion/pkg/snet"
@@ -225,6 +227,40 @@ func realMain(ctx context.Context) error {
 		return err
 	}
 
+	privateMemberships := topo.PrivateISDMemberships()
+	type privateMembershipInfo struct {
+		cfg topology.PrivateISDMembership
+		ia  addr.IA
+	}
+	privateInfos := make([]privateMembershipInfo, 0, len(privateMemberships))
+	for _, pm := range privateMemberships {
+		ia, err := addr.IAFrom(pm.ISD, topo.IA().AS())
+		if err != nil {
+			return serrors.Wrap("deriving private IA", err, "isd", pm.ISD, "as", topo.IA().AS())
+		}
+		privateInfos = append(privateInfos, privateMembershipInfo{cfg: pm, ia: ia})
+	}
+
+	// Get all tls loaders for the public and all the private isd memberships
+	serverLoaders := make(map[addr.IA]cstrust.TLSCertificateLoader, len(privateInfos)+1)
+	clientLoaders := make(map[addr.IA]cstrust.TLSCertificateLoader, len(privateInfos)+1)
+	serverLoaders[topo.IA()] = cs.NewTLSCertificateLoader(
+		topo.IA(), x509.ExtKeyUsageServerAuth, trustDB, globalCfg.General.ConfigDir,
+	)
+	clientLoaders[topo.IA()] = cs.NewTLSCertificateLoader(
+		topo.IA(), x509.ExtKeyUsageClientAuth, trustDB, globalCfg.General.ConfigDir,
+	)
+	for _, info := range privateInfos {
+		ia := info.ia
+		serverLoaders[ia] = cs.NewTLSCertificateLoader(
+			ia, x509.ExtKeyUsageServerAuth, trustDB, globalCfg.General.ConfigDir,
+		)
+		clientLoaders[ia] = cs.NewTLSCertificateLoader(
+			ia, x509.ExtKeyUsageClientAuth, trustDB, globalCfg.General.ConfigDir,
+		)
+	}
+	tlsLoaders := newIALoaders(topo.IA(), serverLoaders, clientLoaders)
+
 	// FIXME: readability would be improved if we could be consistent with address
 	// representations in NetworkConfig (string or cooked, chose one).
 	nc := infraenv.NetworkConfig{
@@ -232,12 +268,10 @@ func realMain(ctx context.Context) error {
 		Public: topo.ControlServiceAddress(globalCfg.General.ID),
 		QUIC: infraenv.QUIC{
 			TLSVerifier: trust.NewTLSCryptoVerifier(trustDB),
-			GetCertificate: cs.NewTLSCertificateLoader(
-				topo.IA(), x509.ExtKeyUsageServerAuth, trustDB, globalCfg.General.ConfigDir,
-			).GetCertificate,
-			GetClientCertificate: cs.NewTLSCertificateLoader(
-				topo.IA(), x509.ExtKeyUsageClientAuth, trustDB, globalCfg.General.ConfigDir,
-			).GetClientCertificate,
+			// use own wrapper here that looks at the IA and selects correct membership certificate
+			// the IA is either found by looking at the sni value (server) or by looking at the context (client)
+			GetCertificate:       tlsLoaders.GetCertificate,
+			GetClientCertificate: tlsLoaders.GetClientCertificate,
 		},
 		SVCResolver: topo,
 		SCMPHandler: snet.DefaultSCMPHandler{
@@ -249,18 +283,6 @@ func realMain(ctx context.Context) error {
 		MTU:                    topo.MTU(),
 		Topology:               adaptTopology(topo),
 	}
-	quicStack, err := nc.QUICStack(ctx)
-	if err != nil {
-		return serrors.Wrap("initializing QUIC stack", err)
-	}
-	dialer := &libgrpc.QUICDialer{
-		Rewriter: &onehop.AddressRewriter{
-			Rewriter: nc.AddressRewriter(),
-			MAC:      macGen(),
-		},
-		Dialer: quicStack.InsecureDialer,
-	}
-
 	beaconDB, err := storage.NewBeaconStorage(globalCfg.BeaconDB, topo.IA())
 	if err != nil {
 		return serrors.Wrap("initializing beacon storage", err)
@@ -314,11 +336,9 @@ func realMain(ctx context.Context) error {
 			IsPrivate:    false,
 		},
 	}
-	for _, pm := range topo.PrivateISDMemberships() {
-		ia, err := addr.IAFrom(pm.ISD, topo.IA().AS())
-		if err != nil {
-			return serrors.Wrap("deriving private IA", err, "isd", pm.ISD, "as", topo.IA().AS())
-		}
+	for _, info := range privateInfos {
+		pm := info.cfg
+		ia := info.ia
 		pol := loadedPolicies{}
 		if pm.Core {
 			pol.CorePolicies = &corePolicies
@@ -343,11 +363,83 @@ func realMain(ctx context.Context) error {
 			Store:        store,
 			AllowIsdLoop: allow,
 			Policies:     pol,
-			BeaconOnly:   true,
+			BeaconOnly:   false,
 			IsPrivate:    true,
 			PrivateISD:   pm.ISD,
 			CertIssuer:   pm.CertIssuer,
 		})
+	}
+
+	membershipNetworks := make(map[addr.IA]*membershipNetwork, len(membershipEnvs))
+	sharedCfg := nc
+	sharedCfg.IA = topo.IA()
+	sharedCfg.Topology.LocalIA = topo.IA()
+
+	sharedStack, err := sharedCfg.QUICStack(ctx)
+	if err != nil {
+		return serrors.Wrap("initializing shared QUIC stack", err, "ia", topo.IA())
+	}
+
+	for i := range membershipEnvs {
+		env := &membershipEnvs[i]
+
+		rewriter := &onehop.AddressRewriter{
+			Rewriter: sharedCfg.AddressRewriter(),
+			MAC:      macGen(),
+		}
+
+		grpcDialer := &libgrpc.QUICDialer{
+			Rewriter: membershipAddressRewriter{
+				inner: rewriter,
+				ia:    env.IA,       // sni/certs resolved for this membership
+				base:  sharedCfg.IA, // transport maps to public isd
+			},
+			Dialer: newSNIDialer(sharedStack, env.IA),
+		}
+
+		connectTLS := func() *tls.Config {
+			if sharedStack.InsecureDialer.TLSConfig == nil {
+				return nil
+			}
+			cfg := sharedStack.InsecureDialer.TLSConfig.Clone()
+			cfg.NextProtos = []string{"h3"}
+			cfg.ServerName = env.IA.String()
+			return cfg
+		}()
+
+		connectDialer := wrapEarlyDialer((&squic.EarlyDialerFactory{
+			Transport: sharedStack.InsecureDialer.Transport,
+			TLSConfig: connectTLS,
+			Rewriter:  rewriter,
+		}).NewDialer, env.IA, sharedCfg.IA)
+
+		registrar := &happy.Registrar{
+			Connect: beaconingconnect.Registrar{Dialer: connectDialer},
+			Grpc:    beaconinggrpc.Registrar{Dialer: grpcDialer},
+		}
+
+		membershipNetworks[env.IA] = &membershipNetwork{
+			Env:           env,
+			Config:        sharedCfg,
+			Stack:         sharedStack,
+			Rewriter:      rewriter,
+			GRPCDialer:    grpcDialer,
+			ConnectDialer: connectDialer,
+			Registrar:     registrar,
+		}
+	}
+
+	registrarRPCs := make(map[addr.IA]beaconing.RPC, len(membershipNetworks))
+	for ia, network := range membershipNetworks {
+		registrarRPCs[ia] = network.Registrar
+	}
+	multiRPC := multiRegistrar{
+		defaultIA:  topo.IA(),
+		registrars: registrarRPCs,
+	}
+	baseNetwork, ok := membershipNetworks[topo.IA()]
+	if !ok {
+		return serrors.New("missing network for local membership", "ia", topo.IA())
 	}
 	ctxSigner, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -380,15 +472,15 @@ func realMain(ctx context.Context) error {
 		Fetcher: trusthappy.Fetcher{
 			Connect: trustconnect.Fetcher{
 				IA: topo.IA(),
-				Dialer: (&squic.EarlyDialerFactory{
-					Transport: quicStack.InsecureDialer.Transport,
-					TLSConfig: libconnect.AdaptClientTLS(quicStack.InsecureDialer.TLSConfig),
-					Rewriter:  dialer.Rewriter,
-				}).NewDialer,
+				Dialer: wrapEarlyDialer((&squic.EarlyDialerFactory{
+					Transport: baseNetwork.Stack.InsecureDialer.Transport,
+					TLSConfig: libconnect.AdaptClientTLS(baseNetwork.Stack.InsecureDialer.TLSConfig),
+					Rewriter:  baseNetwork.Rewriter,
+				}).NewDialer, topo.IA(), sharedCfg.IA),
 			},
 			Grpc: trustgrpc.Fetcher{
 				IA:       topo.IA(),
-				Dialer:   dialer,
+				Dialer:   baseNetwork.GRPCDialer,
 				Requests: libmetrics.NewPromCounter(trustmetrics.RPC.Fetches),
 			},
 		},
@@ -413,14 +505,14 @@ func realMain(ctx context.Context) error {
 		QueryInterval: globalCfg.PS.QueryInterval.Duration,
 		RPC: &segfetcherhappy.Requester{
 			Connect: &segfetcherconnect.Requester{
-				Dialer: (&squic.EarlyDialerFactory{
-					Transport: quicStack.InsecureDialer.Transport,
-					TLSConfig: libconnect.AdaptClientTLS(quicStack.InsecureDialer.TLSConfig),
-					Rewriter:  dialer.Rewriter,
-				}).NewDialer,
+				Dialer: wrapEarlyDialer((&squic.EarlyDialerFactory{
+					Transport: baseNetwork.Stack.InsecureDialer.Transport,
+					TLSConfig: libconnect.AdaptClientTLS(baseNetwork.Stack.InsecureDialer.TLSConfig),
+					Rewriter:  baseNetwork.Rewriter,
+				}).NewDialer, topo.IA(), sharedCfg.IA),
 			},
 			Grpc: &segfetchergrpc.Requester{
-				Dialer: dialer,
+				Dialer: baseNetwork.GRPCDialer,
 			},
 		},
 		Inspector: inspector,
@@ -504,25 +596,28 @@ func realMain(ctx context.Context) error {
 	connectIntra.Handle(cpconnect.NewSegmentLookupServiceHandler(segreqconnect.LookupServer{
 		LookupServer: forwardingLookupServer,
 	}))
-	if topo.Core() {
+	hasCoreMembership := topo.Core()
+	for _, info := range privateInfos {
+		if info.cfg.Core {
+			hasCoreMembership = true
+			break
+		}
+	}
+	// Handle segment lookup (authoritative) if core anywhere.
+	if hasCoreMembership {
 		cppb.RegisterSegmentLookupServiceServer(quicServer, authLookupServer)
 		connectInter.Handle(cpconnect.NewSegmentLookupServiceHandler(segreqconnect.LookupServer{
 			LookupServer: authLookupServer,
 		}))
 	}
 
-	// Handle segment registration.
-	if topo.Core() {
+	// Handle segment registration if core anywhere.
+	if hasCoreMembership {
 		registrationServer := &segreggrpc.RegistrationServer{
 			LocalIA: topo.IA(),
 			SegHandler: seghandler.Handler{
-				Verifier: &seghandler.DefaultVerifier{
-					Verifier: verifier,
-				},
-				Storage: &seghandler.DefaultStorage{
-					PathDB:   pathDB,
-					RevCache: revCache,
-				},
+				Verifier: &seghandler.DefaultVerifier{Verifier: verifier},
+				Storage:  &seghandler.DefaultStorage{PathDB: pathDB, RevCache: revCache},
 			},
 			Registrations: libmetrics.NewPromCounter(metrics.SegmentRegistrationsTotal),
 		}
@@ -720,7 +815,7 @@ func realMain(ctx context.Context) error {
 		Verifier:          verifier,
 		Signer:            signer,
 		PathDB:            pathDB,
-		Dialer:            dialer,
+		Dialer:            baseNetwork.GRPCDialer,
 		FetcherConfig:     fetcherCfg,
 		IntraASTCPServer:  connectIntra,
 		InterASQUICServer: quicServer,
@@ -777,18 +872,18 @@ func realMain(ctx context.Context) error {
 
 		drkeyFetcher := drkeyhappy.Fetcher{
 			Connect: &drkeyconnect.Fetcher{
-				Dialer: (&squic.EarlyDialerFactory{
-					Transport: quicStack.Dialer.Transport,
-					TLSConfig: libconnect.AdaptClientTLS(quicStack.Dialer.TLSConfig),
-					Rewriter:  dialer.Rewriter,
-				}).NewDialer,
+				Dialer: wrapEarlyDialer((&squic.EarlyDialerFactory{
+					Transport: baseNetwork.Stack.Dialer.Transport,
+					TLSConfig: libconnect.AdaptClientTLS(baseNetwork.Stack.Dialer.TLSConfig),
+					Rewriter:  nc.AddressRewriter(),
+				}).NewDialer, topo.IA(), sharedCfg.IA),
 				Router:     segreq.NewRouter(fetcherCfg),
 				MaxRetries: 20,
 			},
 			Grpc: &drkeygrpc.Fetcher{
 				Dialer: &libgrpc.QUICDialer{
 					Rewriter: nc.AddressRewriter(),
-					Dialer:   quicStack.Dialer,
+					Dialer:   wrapConnDialer(baseNetwork.Stack.Dialer, topo.IA()),
 				},
 				Router:     segreq.NewRouter(fetcherCfg),
 				MaxRetries: 20,
@@ -831,12 +926,21 @@ func realMain(ctx context.Context) error {
 	}
 
 	grpcConns := make(chan *quic.Conn)
-	//nolint:contextcheck // false positive.
+
+	cleanup.Add(func() error {
+		if err := sharedStack.Listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		if err := sharedStack.Dialer.Transport.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		return nil
+	})
+
 	g.Go(func() error {
 		defer log.HandlePanic()
-		listener := quicStack.Listener
 		for {
-			conn, err := listener.Accept(context.Background())
+			conn, err := sharedStack.Listener.Accept(context.Background())
 			if err == quic.ErrServerClosed {
 				return http.ErrServerClosed
 			}
@@ -846,6 +950,10 @@ func realMain(ctx context.Context) error {
 			go func() {
 				defer log.HandlePanic()
 				if conn.ConnectionState().TLS.NegotiatedProtocol != "h3" {
+					log.Debug("Routing QUIC connection to gRPC",
+						"alpn", conn.ConnectionState().TLS.NegotiatedProtocol,
+						"remote", conn.RemoteAddr().String(),
+					)
 					grpcConns <- conn
 					return
 				}
@@ -859,7 +967,7 @@ func realMain(ctx context.Context) error {
 
 	g.Go(func() error {
 		defer log.HandlePanic()
-		grpcListener := squic.NewConnListener(grpcConns, quicStack.Listener.Addr())
+		grpcListener := squic.NewConnListener(grpcConns, sharedStack.Listener.Addr())
 		if err := quicServer.Serve(grpcListener); err != nil {
 			return serrors.Wrap("serving gRPC/SCION API", err)
 		}
@@ -949,21 +1057,6 @@ func realMain(ctx context.Context) error {
 		log.Info("No static info file found. Static info settings disabled.", "err", err)
 	}
 
-	rpc := &happy.Registrar{
-		Connect: beaconingconnect.Registrar{
-			Dialer: (&squic.EarlyDialerFactory{
-				Transport: quicStack.InsecureDialer.Transport,
-				TLSConfig: func() *tls.Config {
-					cfg := quicStack.InsecureDialer.TLSConfig.Clone()
-					cfg.NextProtos = []string{"h3", "SCION"}
-					return cfg
-				}(),
-				Rewriter: dialer.Rewriter,
-			}).NewDialer,
-		},
-		Grpc: beaconinggrpc.Registrar{Dialer: dialer},
-	}
-
 	var internalErr, registered libmetrics.Counter
 	if metrics != nil {
 		internalErr = libmetrics.NewPromCounter(metrics.BeaconingRegistrarInternalErrorsTotal)
@@ -982,7 +1075,7 @@ func realMain(ctx context.Context) error {
 	remotePlugin := &beaconing.RemoteSegmentRegistrationPlugin{
 		InternalErrors: internalErr,
 		Registered:     registered,
-		RPC:            rpc,
+		RPC:            multiRPC,
 		Pather:         pather,
 	}
 	var hiddenPathPlugin *hiddenpath.HiddenSegmentRegistrationPlugin
@@ -1027,6 +1120,7 @@ func realMain(ctx context.Context) error {
 	// - Define a Tasks Config and execute tasks and plugins for each membership individually
 	for idx := range membershipEnvs {
 		env := membershipEnvs[idx]
+		network := membershipNetworks[env.IA]
 		propFilter := newPropagationFilter(env.Core, env.IsPrivate, env.PrivateISD)
 		origFilter := newOriginationFilter(env.IsPrivate, env.PrivateISD)
 		signerRef := env.Signer
@@ -1036,7 +1130,7 @@ func realMain(ctx context.Context) error {
 			IA:            env.IA,
 			Core:          env.Core,
 			MTU:           topo.MTU(),
-			Public:        nc.Public,
+			Public:        network.Config.Public,
 			AllInterfaces: intfs,
 			PropagationInterfaces: func() []*ifstate.Interface {
 				return intfs.Filtered(propFilterCopy)
@@ -1050,21 +1144,13 @@ func realMain(ctx context.Context) error {
 			RevCache:   revCache,
 			BeaconSenderFactory: &happy.BeaconSenderFactory{
 				Connect: &beaconingconnect.BeaconSenderFactory{
-					Dialer: (&squic.EarlyDialerFactory{
-						Transport: quicStack.InsecureDialer.Transport,
-						TLSConfig: func() *tls.Config {
-							cfg := quicStack.InsecureDialer.TLSConfig.Clone()
-							cfg.NextProtos = []string{"h3", "SCION"}
-							return cfg
-						}(),
-						Rewriter: dialer.Rewriter,
-					}).NewDialer,
+					Dialer: network.ConnectDialer,
 				},
 				Grpc: &beaconinggrpc.BeaconSenderFactory{
-					Dialer: dialer,
+					Dialer: network.GRPCDialer,
 				},
 			},
-			SegmentRegister: rpc,
+			SegmentRegister: network.Registrar,
 			BeaconStore:     env.Store,
 			SignerGen: beaconing.SignerGenFunc(func(ctx context.Context) ([]beaconing.Signer, error) {
 				signers, err := signerRef.SignerGen.Generate(ctx)
@@ -1108,7 +1194,7 @@ func realMain(ctx context.Context) error {
 			EPIC:                      globalCfg.BS.EPIC,
 			BeaconOnly:                env.BeaconOnly,
 		}
-		if err := tc.InitPlugins(errCtx, env.Policies.RegistrationPolicies()); err != nil {
+		if err := tc.InitPlugins(beaconing.ContextWithLocalIA(errCtx, env.IA), env.Policies.RegistrationPolicies()); err != nil {
 			return serrors.Wrap("initializing tasks plugins", err, "ia", env.IA)
 		}
 		task, err := cs.StartTasks(tc)
@@ -1152,6 +1238,219 @@ type membershipEnv struct {
 	PrivateISD   addr.ISD
 	Signer       cstrust.RenewingSigner
 	CertIssuer   addr.IA
+}
+
+type membershipNetwork struct {
+	Env           *membershipEnv
+	Config        infraenv.NetworkConfig
+	Stack         *infraenv.QUICStack
+	Rewriter      *onehop.AddressRewriter
+	GRPCDialer    *libgrpc.QUICDialer
+	ConnectDialer libconnect.Dialer
+	Registrar     *happy.Registrar
+}
+
+type iaTLSLoaders struct {
+	server    map[addr.IA]cstrust.TLSCertificateLoader
+	client    map[addr.IA]cstrust.TLSCertificateLoader
+	defaultIA addr.IA
+}
+
+func newIALoaders(
+	defaultIA addr.IA,
+	serverLoaders map[addr.IA]cstrust.TLSCertificateLoader,
+	clientLoaders map[addr.IA]cstrust.TLSCertificateLoader,
+) iaTLSLoaders {
+	return iaTLSLoaders{
+		server:    serverLoaders,
+		client:    clientLoaders,
+		defaultIA: defaultIA,
+	}
+}
+
+func (l iaTLSLoaders) serverCertificate(ctx context.Context, ia addr.IA) (*tls.Certificate, error) {
+	loader, ok := l.server[ia]
+	if !ok {
+		loader = l.server[l.defaultIA]
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return loader.Get(ctx)
+}
+
+func (l iaTLSLoaders) clientCertificate(ctx context.Context, ia addr.IA) (*tls.Certificate, error) {
+	loader, ok := l.client[ia]
+	if !ok {
+		loader = l.client[l.defaultIA]
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return loader.Get(ctx)
+}
+
+// Server side cert selection happens with client-provided sni
+func (l iaTLSLoaders) GetCertificate(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	ia, ok := iaFromServerName(info)
+	if !ok {
+		ia = l.defaultIA
+	}
+	return l.serverCertificate(info.Context(), ia)
+}
+
+// Client side cert selection happens by reading the membership/ia out of the context where it has been written by the writer
+func (l iaTLSLoaders) GetClientCertificate(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	ctx := info.Context()
+	ia, ok := beaconing.LocalIAFromContext(ctx)
+	if !ok {
+		ia = l.defaultIA
+	}
+	return l.clientCertificate(ctx, ia)
+}
+
+func iaFromServerName(hello *tls.ClientHelloInfo) (addr.IA, bool) {
+	if hello == nil || hello.ServerName == "" {
+		return 0, false
+	}
+	parts := strings.Split(hello.ServerName, ",")
+	if len(parts) == 0 {
+		return 0, false
+	}
+	ia, err := addr.ParseIA(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, false
+	}
+	return ia, true
+}
+
+type membershipConnDialer struct {
+	base libgrpc.ConnDialer
+	ia   addr.IA
+}
+
+func (d membershipConnDialer) Dial(ctx context.Context, addr net.Addr) (net.Conn, error) {
+	ctx = beaconing.ContextWithLocalIA(ctx, d.ia)
+	return d.base.Dial(ctx, addr)
+}
+
+func wrapConnDialer(base libgrpc.ConnDialer, ia addr.IA) libgrpc.ConnDialer {
+	return membershipConnDialer{base: base, ia: ia}
+}
+
+func wrapEarlyDialer(base libconnect.Dialer, ia addr.IA, baseIA addr.IA) libconnect.Dialer {
+	return func(addr net.Addr, opts ...squic.EarlyDialerOption) squic.EarlyDialer {
+		d := base(addr, opts...)
+		if d.TLSConfig != nil {
+			cfg := d.TLSConfig.Clone()
+			cfg.ServerName = ia.String() // keep SNI = membership IA
+			d.TLSConfig = cfg
+		}
+		if d.Rewriter != nil {
+			d.Rewriter = membershipAddressRewriter{
+				inner: d.Rewriter,
+				ia:    ia,
+				base:  baseIA,
+			}
+		}
+		return d
+	}
+}
+
+type membershipAddressRewriter struct {
+	inner squic.AddressRewriter
+	ia    addr.IA // logical membership IA (used for TLS SNI & client certs)
+	base  addr.IA // public/base IA used for transport mapping
+}
+
+func (r membershipAddressRewriter) RedirectToQUIC(ctx context.Context, address net.Addr) (net.Addr, error) {
+	// Tag context with the logical membership IA so cert loading works
+	ctx = beaconing.ContextWithLocalIA(ctx, r.ia)
+
+	switch v := address.(type) {
+	case *snet.SVCAddr:
+		if v.IA.ISD() != r.base.ISD() {
+			if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
+				log.Debug("Mapping SVC IA for transport", "from", v.IA, "to", newIA)
+				v.IA = newIA
+			} else {
+				log.Debug("Failed to map SVC IA", "err", err, "from", v.IA, "base", r.base)
+			}
+		}
+	case *snet.UDPAddr:
+		if v.IA.ISD() != r.base.ISD() {
+			if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
+				log.Debug("Mapping UDPAddr IA for transport", "from", v.IA, "to", newIA)
+				v.IA = newIA
+			} else {
+				log.Debug("Failed to map UDPAddr IA", "err", err, "from", v.IA, "base", r.base)
+			}
+		}
+	default:
+	}
+
+	// Continue with the regular redirect.
+	return r.inner.RedirectToQUIC(ctx, address)
+}
+
+type multiRegistrar struct {
+	defaultIA  addr.IA
+	registrars map[addr.IA]beaconing.RPC
+}
+
+func (m multiRegistrar) RegisterSegment(
+	ctx context.Context,
+	meta seg.Meta,
+	remote net.Addr,
+) error {
+	if ia, ok := beaconing.LocalIAFromContext(ctx); ok {
+		if registrar, found := m.registrars[ia]; found {
+			return registrar.RegisterSegment(ctx, meta, remote)
+		}
+	}
+	registrar, ok := m.registrars[m.defaultIA]
+	if !ok {
+		return serrors.New("missing default registrar", "ia", m.defaultIA)
+	}
+	return registrar.RegisterSegment(beaconing.ContextWithLocalIA(ctx, m.defaultIA), meta, remote)
+}
+
+type sniConnDialer struct {
+	transport *quic.Transport
+	baseTLS   *tls.Config
+	ia        addr.IA
+}
+
+func (d sniConnDialer) Dial(ctx context.Context, address net.Addr) (net.Conn, error) {
+	ctx = beaconing.ContextWithLocalIA(ctx, d.ia)
+	var tlsCfg *tls.Config
+	if d.baseTLS != nil {
+		t := d.baseTLS.Clone()
+		t.ServerName = d.ia.String()
+		t.NextProtos = []string{"h3", "SCION"}
+		tlsCfg = t
+	}
+
+	log.Debug("gRPC QUIC dialing target",
+		"local_ia", d.ia,
+		"target", address.String(),
+		"alpn", "SCION",
+	)
+
+	dialer := squic.ConnDialer{
+		Transport: d.transport,
+		TLSConfig: tlsCfg,
+	}
+
+	return dialer.Dial(ctx, address)
+}
+
+func newSNIDialer(stack *infraenv.QUICStack, ia addr.IA) libgrpc.ConnDialer {
+	return sniConnDialer{
+		transport: stack.InsecureDialer.Transport,
+		baseTLS:   stack.InsecureDialer.TLSConfig,
+		ia:        ia,
+	}
 }
 
 // RegistrationPolicies returns the policies that are used for segment registration.

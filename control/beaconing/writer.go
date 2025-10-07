@@ -304,13 +304,15 @@ func (p *RemoteSegmentRegistrationPlugin) New(
 	config map[string]any,
 ) (segreg.SegmentRegistrar, error) {
 	segType := policyType.SegmentType()
+	localIA, _ := LocalIAFromContext(ctx)
 	return &RemoteWriter{
 		RemoteSegmentRegistrationPlugin: *p,
 		InternalErrors: metrics.CounterWith(
 			p.InternalErrors,
 			"seg_type", segType.String(),
 		),
-		Type: segType,
+		Type:    segType,
+		localIA: localIA,
 	}, nil
 }
 
@@ -322,6 +324,8 @@ type RemoteWriter struct {
 	InternalErrors metrics.Counter
 	// Type is the type of segment that is handled by this writer.
 	Type seg.Type
+	// localIA is the IA of the membership executing this writer.
+	localIA addr.IA
 }
 
 var _ segreg.SegmentRegistrar = (*RemoteWriter)(nil)
@@ -402,8 +406,12 @@ func (r *remoteWriter) startSendSegReg(
 			SegType: r.writer.Type.String(),
 		}
 
-		logger := log.FromCtx(ctx)
-		if err := r.rpc.RegisterSegment(ctx, reg, addr); err != nil {
+		sendCtx := ctx
+		if r.writer.localIA != 0 {
+			sendCtx = ContextWithLocalIA(ctx, r.writer.localIA)
+		}
+		logger := log.FromCtx(sendCtx)
+		if err := r.rpc.RegisterSegment(sendCtx, reg, addr); err != nil {
 			logger.Error("Unable to register segment",
 				"seg_type", r.writer.Type, "addr", addr, "err", err)
 			metrics.CounterInc(metrics.CounterWith(r.writer.Registered,
