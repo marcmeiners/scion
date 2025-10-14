@@ -102,6 +102,7 @@ import (
 	"github.com/scionproto/scion/private/mgmtapi/jwtauth"
 	segapi "github.com/scionproto/scion/private/mgmtapi/segments/api"
 	"github.com/scionproto/scion/private/periodic"
+	segfetcher "github.com/scionproto/scion/private/segment/segfetcher"
 	segfetcherconnect "github.com/scionproto/scion/private/segment/segfetcher/connect"
 	segfetchergrpc "github.com/scionproto/scion/private/segment/segfetcher/grpc"
 	segfetcherhappy "github.com/scionproto/scion/private/segment/segfetcher/happy"
@@ -523,6 +524,77 @@ func realMain(ctx context.Context) error {
 		DB:     trustDB,
 		Router: segreq.NewRouter(fetcherCfg),
 	}
+	defaultFetcher := segreq.NewFetcher(fetcherCfg)
+	coreChecker := segreq.CoreChecker{Inspector: inspector}
+	forwardLookup := newMembershipLookuper(topo.IA())
+	authLookup := newMembershipLookuper(topo.IA())
+	hasCoreMembership := false
+
+	//initialize special lookupers that adapt behavior depending on AS membership
+	//use a fetcher with the membership networks we initialized before already for the segment registration
+	for _, env := range membershipEnvs {
+		network, ok := membershipNetworks[env.IA]
+		if !ok {
+			return serrors.New("missing network for membership", "ia", env.IA)
+		}
+
+		var (
+			cfg               segreq.FetcherConfig
+			membershipFetcher *segfetcher.Fetcher
+		)
+		if env.IA == topo.IA() {
+			cfg = fetcherCfg
+			membershipFetcher = defaultFetcher
+		} else {
+			cfg = segreq.FetcherConfig{
+				IA:            env.IA,
+				MTU:           topo.MTU(),
+				Core:          env.Core,
+				NextHopper:    topo,
+				PathDB:        pathDB,
+				RevCache:      revCache,
+				QueryInterval: globalCfg.PS.QueryInterval.Duration,
+				RPC: &segfetcherhappy.Requester{
+					Connect: &segfetcherconnect.Requester{
+						Dialer: network.ConnectDialer,
+					},
+					Grpc: &segfetchergrpc.Requester{
+						Dialer: network.GRPCDialer,
+					},
+				},
+				Inspector: inspector,
+				Verifier:  verifier,
+			}
+			membershipFetcher = segreq.NewFetcher(cfg)
+		}
+
+		forwardLookup.Add(env.IA, &segreq.ForwardingLookup{
+			LocalIA:     env.IA,
+			CoreChecker: coreChecker,
+			Fetcher:     membershipFetcher,
+			Expander: segreq.WildcardExpander{
+				LocalIA:   env.IA,
+				Core:      env.Core,
+				Inspector: inspector,
+				PathDB:    pathDB,
+			},
+		})
+		if env.Core {
+			hasCoreMembership = true
+			authLookup.Add(env.IA, &segreq.AuthoritativeLookup{
+				LocalIA:     env.IA,
+				CoreChecker: coreChecker,
+				PathDB:      pathDB,
+			})
+		}
+		if env.IA == topo.IA() {
+			provider.Router = trust.AuthRouter{
+				ISD:    topo.IA().ISD(),
+				DB:     trustDB,
+				Router: segreq.NewRouter(cfg),
+			}
+		}
+	}
 
 	quicServer := grpc.NewServer(
 		grpc.Creds(libgrpc.PassThroughCredentials{}),
@@ -566,27 +638,13 @@ func realMain(ctx context.Context) error {
 
 	// Handle segment lookup
 	authLookupServer := &segreqgrpc.LookupServer{
-		Lookuper: segreq.AuthoritativeLookup{
-			LocalIA:     topo.IA(),
-			CoreChecker: segreq.CoreChecker{Inspector: inspector},
-			PathDB:      pathDB,
-		},
+		Lookuper:     authLookup,
 		RevCache:     revCache,
 		Requests:     libmetrics.NewPromCounter(metrics.SegmentLookupRequestsTotal),
 		SegmentsSent: libmetrics.NewPromCounter(metrics.SegmentLookupSegmentsSentTotal),
 	}
 	forwardingLookupServer := &segreqgrpc.LookupServer{
-		Lookuper: segreq.ForwardingLookup{
-			LocalIA:     topo.IA(),
-			CoreChecker: segreq.CoreChecker{Inspector: inspector},
-			Fetcher:     segreq.NewFetcher(fetcherCfg),
-			Expander: segreq.WildcardExpander{
-				LocalIA:   topo.IA(),
-				Core:      topo.Core(),
-				Inspector: inspector,
-				PathDB:    pathDB,
-			},
-		},
+		Lookuper:     forwardLookup,
 		RevCache:     revCache,
 		Requests:     libmetrics.NewPromCounter(metrics.SegmentLookupRequestsTotal),
 		SegmentsSent: libmetrics.NewPromCounter(metrics.SegmentLookupSegmentsSentTotal),
@@ -596,13 +654,6 @@ func realMain(ctx context.Context) error {
 	connectIntra.Handle(cpconnect.NewSegmentLookupServiceHandler(segreqconnect.LookupServer{
 		LookupServer: forwardingLookupServer,
 	}))
-	hasCoreMembership := topo.Core()
-	for _, info := range privateInfos {
-		if info.cfg.Core {
-			hasCoreMembership = true
-			break
-		}
-	}
 	// Handle segment lookup (authoritative) if core anywhere.
 	if hasCoreMembership {
 		cppb.RegisterSegmentLookupServiceServer(quicServer, authLookupServer)
@@ -1413,6 +1464,67 @@ func (m multiRegistrar) RegisterSegment(
 		return serrors.New("missing default registrar", "ia", m.defaultIA)
 	}
 	return registrar.RegisterSegment(beaconing.ContextWithLocalIA(ctx, m.defaultIA), meta, remote)
+}
+
+// new lookuper that satisfies interface and allows us to do lookups for matching IA or ISD (AS value could be zero)
+// this lookuper can be used for both forward and auth lookup
+type membershipLookuper struct {
+	defaultIA addr.IA
+	byIA      map[addr.IA]segreqgrpc.Lookuper
+	byISD     map[addr.ISD]segreqgrpc.Lookuper
+}
+
+func newMembershipLookuper(defaultIA addr.IA) *membershipLookuper {
+	return &membershipLookuper{
+		defaultIA: defaultIA,
+		byIA:      make(map[addr.IA]segreqgrpc.Lookuper),
+		byISD:     make(map[addr.ISD]segreqgrpc.Lookuper),
+	}
+}
+
+func (m *membershipLookuper) Add(local addr.IA, lookuper segreqgrpc.Lookuper) {
+	if lookuper == nil {
+		return
+	}
+	m.byIA[local] = lookuper
+	if _, exists := m.byISD[local.ISD()]; !exists {
+		m.byISD[local.ISD()] = lookuper
+	}
+}
+
+func (m *membershipLookuper) LookupSegments(
+	ctx context.Context,
+	src, dst addr.IA,
+) (segfetcher.Segments, error) {
+	if lu := m.lookupByIA(src); lu != nil {
+		return lu.LookupSegments(ctx, src, dst)
+	}
+	if src.AS() == 0 {
+		if lu := m.lookupByISD(src.ISD()); lu != nil {
+			return lu.LookupSegments(ctx, src, dst)
+		}
+	}
+	if m.defaultIA != 0 {
+		if lu := m.lookupByIA(m.defaultIA); lu != nil {
+			return lu.LookupSegments(ctx, src, dst)
+		}
+	}
+	return nil, serrors.JoinNoStack(segfetcher.ErrInvalidRequest, nil,
+		"src", src, "dst", dst, "reason", "membership not served")
+}
+
+func (m *membershipLookuper) lookupByIA(local addr.IA) segreqgrpc.Lookuper {
+	if lu, ok := m.byIA[local]; ok {
+		return lu
+	}
+	return nil
+}
+
+func (m *membershipLookuper) lookupByISD(isd addr.ISD) segreqgrpc.Lookuper {
+	if lu, ok := m.byISD[isd]; ok {
+		return lu
+	}
+	return nil
 }
 
 type sniConnDialer struct {

@@ -274,8 +274,17 @@ class TopoGenerator(object):
             'test_dispatcher': as_conf.get('test_dispatcher', True),
             'dispatched_ports': as_conf.get('dispatched_ports', self.args.dispatched_ports),
         }
+        local_ias = [str(topo_id)]
         if private_isds:
             self.topo_dicts[topo_id]['private_isds'] = private_isds
+            as_part = topo_id.as_str()
+            for entry in private_isds:
+                try:
+                    isd = int(entry['isd'])
+                except (TypeError, ValueError):
+                    isd = entry['isd']
+                local_ias.append(f"{isd}-{as_part}")
+        self.topo_dicts[topo_id]['local_ias'] = local_ias
         for i in SCION_SERVICE_NAMES:
             self.topo_dicts[topo_id][i] = {}
         self._gen_srv_entries(topo_id, as_conf)

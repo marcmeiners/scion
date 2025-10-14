@@ -23,6 +23,7 @@ import (
 
 	"github.com/scionproto/scion/daemon/config"
 	"github.com/scionproto/scion/pkg/addr"
+	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/snet"
 	"github.com/scionproto/scion/private/pathdb"
@@ -46,8 +47,10 @@ type Fetcher interface {
 }
 
 type fetcher struct {
-	pather segfetcher.Pather
-	config config.SDConfig
+	defaultIA addr.IA
+	pather    *segfetcher.Pather
+	perISD    map[addr.ISD]*segfetcher.Pather
+	config    config.SDConfig
 }
 
 type FetcherConfig struct {
@@ -68,9 +71,28 @@ type FetcherConfig struct {
 }
 
 func NewFetcher(cfg FetcherConfig) Fetcher {
-	return &fetcher{
-		pather: segfetcher.Pather{
-			IA:         cfg.IA,
+	localIAs := []addr.IA{cfg.IA}
+	seen := map[addr.IA]struct{}{
+		cfg.IA: {},
+	}
+	for _, raw := range cfg.Cfg.LocalIAs {
+		ia, err := addr.ParseIA(raw)
+		if err != nil {
+			log.Debug("Ignoring invalid local IA", "ia", raw, "err", err)
+			continue
+		}
+		if _, ok := seen[ia]; ok {
+			continue
+		}
+		localIAs = append(localIAs, ia)
+		seen[ia] = struct{}{}
+	}
+
+	perISD := make(map[addr.ISD]*segfetcher.Pather)
+	var defaultPather *segfetcher.Pather
+	for _, ia := range localIAs {
+		p := &segfetcher.Pather{
+			IA:         ia,
 			MTU:        cfg.MTU,
 			NextHopper: cfg.NextHopper,
 			RevCache:   cfg.RevCache,
@@ -96,12 +118,20 @@ func NewFetcher(cfg FetcherConfig) Fetcher {
 				Metrics: segfetcher.NewFetcherMetrics("sd"),
 			},
 			Splitter: &segfetcher.MultiSegmentSplitter{
-				LocalIA:   cfg.IA,
+				LocalIA:   ia,
 				Core:      cfg.Core,
 				Inspector: cfg.Inspector,
 			},
-		},
-		config: cfg.Cfg,
+		}
+		perISD[ia.ISD()] = p
+	}
+	defaultPather = perISD[cfg.IA.ISD()]
+
+	return &fetcher{
+		defaultIA: cfg.IA,
+		pather:    defaultPather,
+		perISD:    perISD,
+		config:    cfg.Cfg,
 	}
 }
 
@@ -109,17 +139,62 @@ func NewFetcher(cfg FetcherConfig) Fetcher {
 // src may be either zero or the local IA (nothing else).
 func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 	refresh bool) ([]snet.Path, error) {
-
-	// Check context
 	if _, ok := ctx.Deadline(); !ok {
 		return nil, serrors.New("context must have deadline set")
 	}
-	local := f.pather.IA
-	// Check source
-	if !src.IsZero() && !src.Equal(local) {
-		return nil, serrors.New("bad source AS", "src", src)
+
+	type candidate struct {
+		pather *segfetcher.Pather
+		dst    addr.IA
 	}
-	return f.pather.GetPaths(ctx, dst, refresh)
+
+	candidates := make([]candidate, 0, len(f.perISD))
+	seen := make(map[*segfetcher.Pather]struct{}, len(f.perISD))
+	addCandidate := func(p *segfetcher.Pather, candidateDst addr.IA) {
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		candidates = append(candidates, candidate{pather: p, dst: candidateDst})
+	}
+	addCandidate(f.pather, dst)
+	for isd, p := range f.perISD {
+		target := dst
+		if isd != dst.ISD() {
+			var err error
+			// don't implicitly check if dst is part of that private isd, pather.GetPaths just won't return paths
+			// maybe change this later on
+			target, err = addr.IAFrom(isd, dst.AS())
+			if err != nil {
+				log.Debug("unable to derive membership IA", "isd", isd, "as", dst.AS(), "err", err)
+				continue
+			}
+		}
+		addCandidate(p, target)
+	}
+
+	var (
+		paths []snet.Path
+		errs  serrors.List
+	)
+	for _, cand := range candidates {
+		local := cand.pather.IA
+		if !src.IsZero() && !src.Equal(local) {
+			errs = append(errs, serrors.New("bad source AS", "src", src, "ia", local))
+			continue
+		}
+		// correct source ia (membershio) is already saved in the pather instance
+		ps, err := cand.pather.GetPaths(ctx, cand.dst, refresh)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		paths = append(paths, ps...)
+	}
+	if len(paths) == 0 && len(errs) > 0 {
+		return nil, errs.ToError()
+	}
+	return paths, nil
 }
 
 type dstProvider struct {

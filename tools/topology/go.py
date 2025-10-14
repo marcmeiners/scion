@@ -136,10 +136,12 @@ class GoGenerator(object):
     def generate_sciond(self):
         for topo_id, topo in self.args.topo_dicts.items():
             base = topo_id.base_dir(self.args.output_dir)
-            sciond_conf = self._build_sciond_conf(topo_id, topo["isd_as"], base)
+            sciond_conf = self._build_sciond_conf(topo_id, topo, base)
             write_file(os.path.join(base, SD_CONFIG_NAME), toml.dumps(sciond_conf))
 
-    def _build_sciond_conf(self, topo_id, ia, base):
+    def _build_sciond_conf(self, topo_id, topo, base):
+        ia = topo["isd_as"]
+        local_ias = topo.get("local_ias", [])
         name = sciond_name(topo_id)
         config_dir = '/etc/scion' if self.args.docker else base
         ip = sciond_ip(self.args.docker, topo_id, self.args.networks)
@@ -167,6 +169,8 @@ class GoGenerator(object):
                 'addr': socket_address_str(ip, SD_API_PORT+700),
             }
         }
+        if local_ias:
+            raw_entry['sd']['local_ias'] = local_ias
         return raw_entry
 
     def generate_disp(self):

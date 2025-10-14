@@ -121,6 +121,8 @@ type SDConfig struct {
 	// Address is the local address to listen on for SCION messages, and to send out messages to
 	// other nodes.
 	Address string `toml:"address,omitempty"`
+	// LocalIAs contains the list of IAS served by this daemon.
+	LocalIAs []string `toml:"local_ias,omitempty"`
 	// DisableSegVerification indicates that segment verification should be
 	// disabled.
 	DisableSegVerification bool `toml:"disable_seg_verification,omitempty"`
