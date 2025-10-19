@@ -1499,10 +1499,9 @@ func (m *membershipLookuper) LookupSegments(
 	if lu := m.lookupByIA(src); lu != nil {
 		return lu.LookupSegments(ctx, src, dst)
 	}
-	if src.AS() == 0 {
-		if lu := m.lookupByISD(src.ISD()); lu != nil {
-			return lu.LookupSegments(ctx, src, dst)
-		}
+	// if there is no exact IA match, fall back to ISD-based lookuper
+	if lu := m.lookupByISD(src.ISD()); lu != nil {
+		return lu.LookupSegments(ctx, src, dst)
 	}
 	if m.defaultIA != 0 {
 		if lu := m.lookupByIA(m.defaultIA); lu != nil {
