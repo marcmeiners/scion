@@ -157,7 +157,6 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		seen[p] = struct{}{}
 		candidates = append(candidates, candidate{pather: p, dst: candidateDst})
 	}
-	addCandidate(f.pather, dst)
 	for isd, p := range f.perISD {
 		target := dst
 		if isd != dst.ISD() {
