@@ -230,6 +230,7 @@ type dataPlane struct {
 	localHost           addr.Host
 	macFactory          func() hash.Hash
 	localIA             addr.IA
+	localIAs            map[addr.IA]struct{}
 	mtx                 sync.Mutex
 	running             atomic.Bool
 	Metrics             *Metrics
@@ -380,7 +381,41 @@ func (d *dataPlane) SetIA(ia addr.IA) error {
 		return errAlreadySet
 	}
 	d.localIA = ia
+	if d.localIAs == nil {
+		d.localIAs = make(map[addr.IA]struct{})
+	}
+	d.localIAs[ia] = struct{}{}
 	return nil
+}
+
+// AddLocalIA adds an additional local IA served by this dataplane instance.
+// It can only be called before the dataplane is running.
+func (d *dataPlane) AddLocalIA(ia addr.IA) error {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.isRunning() {
+		return errModifyExisting
+	}
+	if ia.IsZero() {
+		return errEmptyValue
+	}
+	if d.localIAs == nil {
+		d.localIAs = make(map[addr.IA]struct{})
+	}
+	d.localIAs[ia] = struct{}{}
+	return nil
+}
+
+// hasLocalIA returns true iff ia is one of the configured local IAs.
+func (d *dataPlane) hasLocalIA(ia addr.IA) bool {
+	if ia == d.localIA {
+		return true
+	}
+	if d.localIAs == nil {
+		return false
+	}
+	_, ok := d.localIAs[ia]
+	return ok
 }
 
 // SetKey sets the key used for MAC verification. The key provided here should
@@ -908,6 +943,16 @@ func (p *slowPathPacketProcessor) reset() {
 	p.e2eLayer = slayers.EndToEndExtnSkipper{}
 }
 
+// replyIA returns the IA to use for SCMP replies created on the slow path.
+// If the current packet's destination IA matches one of the dataplane's
+// local IAs, use that; otherwise fall back to the default local IA.
+func (p *slowPathPacketProcessor) replyIA() addr.IA {
+	if p.d.hasLocalIA(p.scionLayer.DstIA) {
+		return p.scionLayer.DstIA
+	}
+	return p.d.localIA
+}
+
 func (p *slowPathPacketProcessor) processPacket(pkt *Packet) error {
 	var err error
 	p.reset()
@@ -956,12 +1001,12 @@ func (p *slowPathPacketProcessor) processPacket(pkt *Packet) error {
 			layer = &slayers.SCMPDestinationUnreachable{}
 		case slayers.SCMPTypeExternalInterfaceDown:
 			layer = &slayers.SCMPExternalInterfaceDown{
-				IA:   p.d.localIA,
+				IA:   p.replyIA(),
 				IfID: uint64(p.pkt.egress),
 			}
 		case slayers.SCMPTypeInternalConnectivityDown:
 			layer = &slayers.SCMPInternalConnectivityDown{
-				IA:      p.d.localIA,
+				IA:      p.replyIA(),
 				Ingress: uint64(p.ingressFromLink),
 				Egress:  uint64(p.pkt.egress),
 			}
@@ -997,7 +1042,18 @@ func (p *scionPacketProcessor) reset() error {
 	p.hbhLayer = slayers.HopByHopExtnSkipper{}
 	// Reset e2e layer
 	p.e2eLayer = slayers.EndToEndExtnSkipper{}
+	p.matchedLocalIA = 0
 	return nil
+}
+
+// replyIA returns the IA to use for SCMP replies and other local-originated
+// packets. If a specific local IA matched the packet destination, that IA is
+// used; otherwise, fall back to the dataplane's default localIA.
+func (p *scionPacketProcessor) replyIA() addr.IA {
+	if p.matchedLocalIA != 0 {
+		return p.matchedLocalIA
+	}
+	return p.d.localIA
 }
 
 // Convenience function to log an error and return the pDiscard disposition.
@@ -1139,6 +1195,7 @@ type scionPacketProcessor struct {
 	cachedMac       []byte                 // Full MAC. For a Xover, that of the down segment.
 	macInputBuffer  []byte                 // Reusable buffer for MAC computation.
 	bfdLayer        layers.BFD             // Reusable buffer for parsing BFD messages
+	matchedLocalIA  addr.IA                // Set during validation, used later
 }
 
 type slowPathType int8
@@ -1280,8 +1337,12 @@ func (p *scionPacketProcessor) validateIngressID() disposition {
 }
 
 func (p *scionPacketProcessor) validateSrcDstIA() disposition {
-	srcIsLocal := (p.scionLayer.SrcIA == p.d.localIA)
-	dstIsLocal := (p.scionLayer.DstIA == p.d.localIA)
+	srcIsLocal := p.d.hasLocalIA(p.scionLayer.SrcIA)
+	dstIsLocal := p.d.hasLocalIA(p.scionLayer.DstIA)
+	if dstIsLocal {
+		// Remember which local IA matched for downstream decisions and replies.
+		p.matchedLocalIA = p.scionLayer.DstIA
+	}
 	if p.ingressFromLink == 0 {
 		// Outbound
 		// Only check SrcIA if first hop, for transit this already checked by ingress router.
@@ -1668,7 +1729,7 @@ func (p *slowPathPacketProcessor) handleSCMPTraceRouteRequest(ifID uint16) error
 	scmpP = slayers.SCMPTraceroute{
 		Identifier: scmpP.Identifier,
 		Sequence:   scmpP.Sequence,
-		IA:         p.d.localIA,
+		IA:         p.replyIA(),
 		Interface:  uint64(ifID),
 	}
 	return p.packSCMP(slayers.SCMPTypeTracerouteReply, 0, &scmpP, false)
@@ -1690,7 +1751,7 @@ func (p *scionPacketProcessor) validatePktLen() disposition {
 
 func (p *scionPacketProcessor) validateSrcHost() disposition {
 	// We pay for this check only on the first hop.
-	if p.scionLayer.SrcIA != p.d.localIA {
+	if !p.d.hasLocalIA(p.scionLayer.SrcIA) {
 		return pForward
 	}
 	src, err := p.scionLayer.SrcAddr()
@@ -1743,8 +1804,8 @@ func (p *scionPacketProcessor) process() disposition {
 	if disp := p.handleIngressRouterAlert(); disp != pForward {
 		return disp
 	}
-	// Inbound: pkt destined to the local IA.
-	if p.scionLayer.DstIA == p.d.localIA {
+	// Inbound: pkt destined to one of the local IAs.
+	if p.d.hasLocalIA(p.scionLayer.DstIA) {
 		disp := p.resolveInbound()
 		if disp != pForward {
 			return disp
@@ -2265,7 +2326,7 @@ func (p *slowPathPacketProcessor) prepareSCMP(
 	scionL.PathType = revPath.Type()
 	scionL.Path = revPath
 	scionL.DstIA = p.scionLayer.SrcIA
-	scionL.SrcIA = p.d.localIA
+	scionL.SrcIA = p.replyIA()
 	scionL.DstAddrType = p.scionLayer.SrcAddrType
 	scionL.RawDstAddr = p.scionLayer.RawSrcAddr
 	scionL.NextHdr = slayers.L4SCMP

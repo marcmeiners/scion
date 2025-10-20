@@ -102,22 +102,37 @@ type IACtx struct {
 
 // Configure configures the dataplane for the given context.
 func (iac *IACtx) Configure() error {
-	cfg := iac.Config
+    cfg := iac.Config
 	if cfg == nil {
 		// Nothing to do
 		return serrors.New("empty configuration")
 	}
 
 	log.Debug("Configuring Dataplane")
-	if err := ConfigDataplane(iac.DP, cfg); err != nil {
-		brConfDump, errDump := dumpConfig(cfg)
-		if errDump != nil {
-			brConfDump = errDump.Error()
-		}
-		return serrors.Wrap("config setup", err, "config", brConfDump)
-	}
-	log.Debug("Dataplane configured successfully", "config", cfg)
-	return nil
+    if err := ConfigDataplane(iac.DP, cfg); err != nil {
+        brConfDump, errDump := dumpConfig(cfg)
+        if errDump != nil {
+            brConfDump = errDump.Error()
+        }
+        return serrors.Wrap("config setup", err, "config", brConfDump)
+    }
+    // Register additional private-ISD local IAs on the dataplane so the BR
+    // accepts traffic for those memberships as local as well.
+    if len(cfg.Topo.PrivateISDMemberships()) > 0 {
+        for _, pm := range cfg.Topo.PrivateISDMemberships() {
+            ia, err := addr.IAFrom(pm.ISD, cfg.IA.AS())
+            if err != nil {
+                log.Debug("Skipping invalid private membership IA", "isd", pm.ISD, "as", cfg.IA.AS(), "err", err)
+                continue
+            }
+            if err := iac.DP.AddLocalIA(ia); err != nil {
+                log.Debug("Adding local IA failed", "ia", ia, "err", err)
+                continue
+            }
+        }
+    }
+    log.Debug("Dataplane configured successfully", "config", cfg)
+    return nil
 }
 
 func dumpConfig(cfg *Config) (string, error) {
