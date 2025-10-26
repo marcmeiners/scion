@@ -212,7 +212,7 @@ func createVoters(cfg config) error {
 				"create",
 				sensitiveVotingTemplatePath(view.IA, cfg.out),
 				filepath.Join(votingDir, sensitiveCertName(view.IA)),
-				filepath.Join(votingDir, "sensitive-voting.key"),
+				filepath.Join(votingDir, sensitiveKeyName(view.IA)),
 				"--profile=sensitive-voting",
 				"--not-before=" + strconv.Itoa(int(cfg.now.Unix())),
 				"--not-after=730d",
@@ -227,13 +227,22 @@ func createVoters(cfg config) error {
 			if err != nil {
 				return err
 			}
+			// Backward-compatible fallback: create generic filename if absent - only for the public isd membership (for tests etc)
+			if _, err := os.Stat(filepath.Join(votingDir, "sensitive-voting.key")); errors.Is(err, os.ErrNotExist) {
+				if err := copyFile(
+					filepath.Join(votingDir, "sensitive-voting.key"),
+					filepath.Join(votingDir, sensitiveKeyName(view.IA)),
+				); err != nil {
+					return err
+				}
+			}
 
 			cmd = certs.Cmd(command.StringPather("certificate"))
 			cmd.SetArgs([]string{
 				"create",
 				regularVotingTemplatePath(view.IA, cfg.out),
 				filepath.Join(votingDir, regularCertName(view.IA)),
-				filepath.Join(votingDir, "regular-voting.key"),
+				filepath.Join(votingDir, regularKeyName(view.IA)),
 				"--profile=regular-voting",
 				"--not-before=" + strconv.Itoa(int(cfg.now.Unix())),
 				"--not-after=730d",
@@ -247,6 +256,15 @@ func createVoters(cfg config) error {
 			)
 			if err != nil {
 				return err
+			}
+			// Backward-compatible fallback: create generic filename if absent - only for the public isd membership (for tests etc)
+			if _, err := os.Stat(filepath.Join(votingDir, "regular-voting.key")); errors.Is(err, os.ErrNotExist) {
+				if err := copyFile(
+					filepath.Join(votingDir, "regular-voting.key"),
+					filepath.Join(votingDir, regularKeyName(view.IA)),
+				); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -268,7 +286,7 @@ func createCAs(cfg config) error {
 				"create",
 				cpRootTemplatePath(view.IA, cfg.out),
 				filepath.Join(caDir, rootCertName(view.IA)),
-				filepath.Join(caDir, "cp-root.key"),
+				filepath.Join(caDir, cpRootKeyName(view.IA)),
 				"--profile=cp-root",
 				"--not-before=" + strconv.Itoa(int(cfg.now.Unix())),
 				"--not-after=730d",
@@ -276,21 +294,39 @@ func createCAs(cfg config) error {
 			if err := cmd.Execute(); err != nil {
 				return err
 			}
+			// Backward-compatible fallback: create generic filename if absent - only for the public isd membership (for tests etc)
+			if _, err := os.Stat(filepath.Join(caDir, "cp-root.key")); errors.Is(err, os.ErrNotExist) {
+				if err := copyFile(
+					filepath.Join(caDir, "cp-root.key"),
+					filepath.Join(caDir, cpRootKeyName(view.IA)),
+				); err != nil {
+					return err
+				}
+			}
 
 			cmd = certs.Cmd(command.StringPather("certificate"))
 			cmd.SetArgs([]string{
 				"create",
 				cpCATemplatePath(view.IA, cfg.out),
 				filepath.Join(caDir, caCertName(view.IA)),
-				filepath.Join(caDir, "cp-ca.key"),
+				filepath.Join(caDir, cpCAKeyName(view.IA)),
 				"--profile=cp-ca",
 				"--not-before=" + strconv.Itoa(int(cfg.now.Unix())),
 				"--not-after=700d",
 				"--ca=" + filepath.Join(caDir, rootCertName(view.IA)),
-				"--ca-key=" + filepath.Join(caDir, "cp-root.key"),
+				"--ca-key=" + filepath.Join(caDir, cpRootKeyName(view.IA)),
 			})
 			if err := cmd.Execute(); err != nil {
 				return err
+			}
+			// Backward-compatible fallback: create generic filename if absent - only for the public isd membership (for tests etc)
+			if _, err := os.Stat(filepath.Join(caDir, "cp-ca.key")); errors.Is(err, os.ErrNotExist) {
+				if err := copyFile(
+					filepath.Join(caDir, "cp-ca.key"),
+					filepath.Join(caDir, cpCAKeyName(view.IA)),
+				); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -324,7 +360,7 @@ func createASes(cfg config) error {
 				"--not-before="+strconv.Itoa(int(cfg.now.Unix())),
 				"--not-after="+util.FmtDuration(cfg.asValidity),
 				"--ca="+filepath.Join(caDir, caCertName(ca)),
-				"--ca-key="+filepath.Join(caDir, "cp-ca.key"),
+				"--ca-key="+preferCAKey(caDir, ca),
 				"--bundle",
 			)
 
@@ -459,11 +495,20 @@ func createTRCs(cfg config) error {
 }
 
 func loadVoterInfo(voter addr.IA, votingDir string) (*voterInfo, error) {
-	sensitiveKey, err := key.LoadPrivateKey("", filepath.Join(votingDir, "sensitive-voting.key"))
+	// Prefer per-IA key filenames, fallback to legacy generic names for compatibility
+	sensitiveKeyPath := filepath.Join(votingDir, sensitiveKeyName(voter))
+	if _, err := os.Stat(sensitiveKeyPath); errors.Is(err, os.ErrNotExist) {
+		sensitiveKeyPath = filepath.Join(votingDir, "sensitive-voting.key")
+	}
+	sensitiveKey, err := key.LoadPrivateKey("", sensitiveKeyPath)
 	if err != nil {
 		return nil, serrors.Wrap("loading sensitive key", err)
 	}
-	regularKey, err := key.LoadPrivateKey("", filepath.Join(votingDir, "regular-voting.key"))
+	regularKeyPath := filepath.Join(votingDir, regularKeyName(voter))
+	if _, err := os.Stat(regularKeyPath); errors.Is(err, os.ErrNotExist) {
+		regularKeyPath = filepath.Join(votingDir, "regular-voting.key")
+	}
+	regularKey, err := key.LoadPrivateKey("", regularKeyPath)
 	if err != nil {
 		return nil, serrors.Wrap("loading regular key", err)
 	}
@@ -790,4 +835,30 @@ func regularCertName(ia addr.IA, serial ...int) string {
 
 func fmtIA(ia addr.IA) string {
 	return addr.FormatIA(ia, addr.WithFileSeparator(), addr.WithDefaultPrefix())
+}
+
+// Key naming helpers with per-membership IA disambiguation
+func sensitiveKeyName(ia addr.IA) string {
+	return fmt.Sprintf("%s.sensitive.key", fmtIA(ia))
+}
+
+func regularKeyName(ia addr.IA) string {
+	return fmt.Sprintf("%s.regular.key", fmtIA(ia))
+}
+
+func cpRootKeyName(ia addr.IA) string {
+	return fmt.Sprintf("%s.cp-root.key", fmtIA(ia))
+}
+
+func cpCAKeyName(ia addr.IA) string {
+	return fmt.Sprintf("%s.cp-ca.key", fmtIA(ia))
+}
+
+// returns the path to the CA private key, preferring per-IA named key if present
+func preferCAKey(caDir string, ca addr.IA) string {
+	named := filepath.Join(caDir, cpCAKeyName(ca))
+	if _, err := os.Stat(named); err == nil {
+		return named
+	}
+	return filepath.Join(caDir, "cp-ca.key")
 }
