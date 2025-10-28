@@ -1418,26 +1418,32 @@ func (r membershipAddressRewriter) RedirectToQUIC(ctx context.Context, address n
 	// Tag context with the logical membership IA so cert loading works
 	ctx = beaconing.ContextWithLocalIA(ctx, r.ia)
 
-	switch v := address.(type) {
-	case *snet.SVCAddr:
-		if v.IA.ISD() != r.base.ISD() {
-			if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
-				log.Debug("Mapping SVC IA for transport", "from", v.IA, "to", newIA)
-				v.IA = newIA
-			} else {
-				log.Debug("Failed to map SVC IA", "err", err, "from", v.IA, "base", r.base)
+	// Only perform IA remapping for private memberships, and only when the
+	// destination is in the same private ISD. Public membership should not be
+	// remapped, and remapping cross-ISD public addresses breaks connectivity
+	isPublicMembership := r.ia.ISD() == r.base.ISD()
+	if !isPublicMembership {
+		switch v := address.(type) {
+		case *snet.SVCAddr:
+			if v.IA.ISD() == r.ia.ISD() {
+				if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
+					log.Debug("Mapping SVC IA for transport", "from", v.IA, "to", newIA)
+					v.IA = newIA
+				} else {
+					log.Debug("Failed to map SVC IA", "err", err, "from", v.IA, "base", r.base)
+				}
 			}
-		}
-	case *snet.UDPAddr:
-		if v.IA.ISD() != r.base.ISD() {
-			if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
-				log.Debug("Mapping UDPAddr IA for transport", "from", v.IA, "to", newIA)
-				v.IA = newIA
-			} else {
-				log.Debug("Failed to map UDPAddr IA", "err", err, "from", v.IA, "base", r.base)
+		case *snet.UDPAddr:
+			if v.IA.ISD() == r.ia.ISD() {
+				if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
+					log.Debug("Mapping UDPAddr IA for transport", "from", v.IA, "to", newIA)
+					v.IA = newIA
+				} else {
+					log.Debug("Failed to map UDPAddr IA", "err", err, "from", v.IA, "base", r.base)
+				}
 			}
+		default:
 		}
-	default:
 	}
 
 	// Continue with the regular redirect.
