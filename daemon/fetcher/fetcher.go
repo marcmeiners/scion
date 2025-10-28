@@ -157,19 +157,29 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		seen[p] = struct{}{}
 		candidates = append(candidates, candidate{pather: p, dst: candidateDst})
 	}
-	for isd, p := range f.perISD {
-		target := dst
-		if isd != dst.ISD() {
-			var err error
-			// don't implicitly check if dst is part of that private isd, pather.GetPaths just won't return paths
-			// maybe change this later on
-			target, err = addr.IAFrom(isd, dst.AS())
-			if err != nil {
-				log.Debug("unable to derive membership IA", "isd", isd, "as", dst.AS(), "err", err)
-				continue
+
+	// if dst is private only return paths within the provided isd within dst
+	if privatePather, isInISDList := f.perISD[dst.ISD()]; isInISDList && dst.ISD() != f.defaultIA.ISD() {
+		addCandidate(privatePather, dst)
+	} else {
+		// if dst is public add public paths and all possible private paths
+		for isd, p := range f.perISD {
+			if isd == f.defaultIA.ISD() {
+				// leave public ia case unchanged
+				addCandidate(p, dst)
+			} else {
+				target := dst
+				var err error
+				// add a as candidate target the same private isd as in the source, we don't know yet if both are really in the same private ISD
+				target, err = addr.IAFrom(isd, dst.AS())
+				if err != nil {
+					log.Debug("unable to derive membership IA", "isd", isd, "as", dst.AS(), "err", err)
+					continue
+				}
+				addCandidate(p, target)
 			}
+
 		}
-		addCandidate(p, target)
 	}
 
 	var (
