@@ -324,8 +324,6 @@ func realMain(ctx context.Context) error {
 	}
 	multiInserter := newMultiBeaconInserter(beaconDB, &corePolicies, &nonCorePolicies)
 
-	// Define array of environments for all ISD memberships: BeaconOnly means that we don't store segments for now
-	// We did not tell path DB, lookup procedure and dataplane how to discover and select private ISD segments yes
 	membershipEnvs := []membershipEnv{
 		{
 			IA:           topo.IA(),
@@ -389,14 +387,7 @@ func realMain(ctx context.Context) error {
 			MAC:      macGen(),
 		}
 
-		grpcDialer := &libgrpc.QUICDialer{
-			Rewriter: membershipAddressRewriter{
-				inner: rewriter,
-				ia:    env.IA,       // sni/certs resolved for this membership
-				base:  sharedCfg.IA, // transport maps to public isd
-			},
-			Dialer: newSNIDialer(sharedStack, env.IA),
-		}
+		grpcDialer := &libgrpc.QUICDialer{Rewriter: rewriter, Dialer: newSNIDialer(sharedStack, env.IA)}
 
 		connectTLS := func() *tls.Config {
 			if sharedStack.InsecureDialer.TLSConfig == nil {
@@ -404,15 +395,10 @@ func realMain(ctx context.Context) error {
 			}
 			cfg := sharedStack.InsecureDialer.TLSConfig.Clone()
 			cfg.NextProtos = []string{"h3"}
-			cfg.ServerName = env.IA.String()
 			return cfg
 		}()
 
-		connectDialer := wrapEarlyDialer((&squic.EarlyDialerFactory{
-			Transport: sharedStack.InsecureDialer.Transport,
-			TLSConfig: connectTLS,
-			Rewriter:  rewriter,
-		}).NewDialer, env.IA, sharedCfg.IA)
+		connectDialer := (&squic.EarlyDialerFactory{Transport: sharedStack.InsecureDialer.Transport, TLSConfig: connectTLS, Rewriter: rewriter}).NewDialer
 
 		registrar := &happy.Registrar{
 			Connect: beaconingconnect.Registrar{Dialer: connectDialer},
@@ -1391,63 +1377,8 @@ func wrapConnDialer(base libgrpc.ConnDialer, ia addr.IA) libgrpc.ConnDialer {
 
 func wrapEarlyDialer(base libconnect.Dialer, ia addr.IA, baseIA addr.IA) libconnect.Dialer {
 	return func(addr net.Addr, opts ...squic.EarlyDialerOption) squic.EarlyDialer {
-		d := base(addr, opts...)
-		if d.TLSConfig != nil {
-			cfg := d.TLSConfig.Clone()
-			cfg.ServerName = ia.String() // keep SNI = membership IA
-			d.TLSConfig = cfg
-		}
-		if d.Rewriter != nil {
-			d.Rewriter = membershipAddressRewriter{
-				inner: d.Rewriter,
-				ia:    ia,
-				base:  baseIA,
-			}
-		}
-		return d
+		return base(addr, opts...)
 	}
-}
-
-type membershipAddressRewriter struct {
-	inner squic.AddressRewriter
-	ia    addr.IA // logical membership IA (used for TLS SNI & client certs)
-	base  addr.IA // public/base IA used for transport mapping
-}
-
-func (r membershipAddressRewriter) RedirectToQUIC(ctx context.Context, address net.Addr) (net.Addr, error) {
-	// Tag context with the logical membership IA so cert loading works
-	ctx = beaconing.ContextWithLocalIA(ctx, r.ia)
-
-	// Only perform IA remapping for private memberships, and only when the
-	// destination is in the same private ISD. Public membership should not be
-	// remapped, and remapping cross-ISD public addresses breaks connectivity
-	isPublicMembership := r.ia.ISD() == r.base.ISD()
-	if !isPublicMembership {
-		switch v := address.(type) {
-		case *snet.SVCAddr:
-			if v.IA.ISD() == r.ia.ISD() {
-				if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
-					log.Debug("Mapping SVC IA for transport", "from", v.IA, "to", newIA)
-					v.IA = newIA
-				} else {
-					log.Debug("Failed to map SVC IA", "err", err, "from", v.IA, "base", r.base)
-				}
-			}
-		case *snet.UDPAddr:
-			if v.IA.ISD() == r.ia.ISD() {
-				if newIA, err := addr.IAFrom(r.base.ISD(), v.IA.AS()); err == nil {
-					log.Debug("Mapping UDPAddr IA for transport", "from", v.IA, "to", newIA)
-					v.IA = newIA
-				} else {
-					log.Debug("Failed to map UDPAddr IA", "err", err, "from", v.IA, "base", r.base)
-				}
-			}
-		default:
-		}
-	}
-
-	// Continue with the regular redirect.
-	return r.inner.RedirectToQUIC(ctx, address)
 }
 
 type multiRegistrar struct {
@@ -1543,7 +1474,15 @@ func (d sniConnDialer) Dial(ctx context.Context, address net.Addr) (net.Conn, er
 	var tlsCfg *tls.Config
 	if d.baseTLS != nil {
 		t := d.baseTLS.Clone()
-		t.ServerName = d.ia.String()
+		// Set SNI to the destination IA so the server selects the correct cert.
+		switch v := address.(type) {
+		case *snet.SVCAddr:
+			t.ServerName = v.IA.String()
+		case *snet.UDPAddr:
+			t.ServerName = v.IA.String()
+		default:
+			t.ServerName = d.ia.String()
+		}
 		t.NextProtos = []string{"h3", "SCION"}
 		tlsCfg = t
 	}

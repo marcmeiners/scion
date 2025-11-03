@@ -15,18 +15,19 @@
 package grpc
 
 import (
-	"context"
-	"net"
-	"time"
+    "context"
+    "net"
+    "time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/peer"
 
-	libgrpc "github.com/scionproto/scion/pkg/grpc"
-	"github.com/scionproto/scion/pkg/private/serrors"
-	cppb "github.com/scionproto/scion/pkg/proto/control_plane"
-	seg "github.com/scionproto/scion/pkg/segment"
-	"github.com/scionproto/scion/private/segment/segfetcher"
+    libgrpc "github.com/scionproto/scion/pkg/grpc"
+    "github.com/scionproto/scion/pkg/log"
+    "github.com/scionproto/scion/pkg/private/serrors"
+    cppb "github.com/scionproto/scion/pkg/proto/control_plane"
+    seg "github.com/scionproto/scion/pkg/segment"
+    "github.com/scionproto/scion/private/segment/segfetcher"
 )
 
 const (
@@ -48,13 +49,16 @@ type Requester struct {
 }
 
 func (f *Requester) Segments(ctx context.Context, req segfetcher.Request,
-	server net.Addr) (segfetcher.SegmentsReply, error) {
+    server net.Addr) (segfetcher.SegmentsReply, error) {
 
-	dialCtx, cancelF := context.WithTimeout(ctx, DefaultRPCDialTimeout)
-	defer cancelF()
-	conn, err := f.Dialer.Dial(dialCtx, server)
-	if err != nil {
-		return segfetcher.SegmentsReply{}, err
+    if logger := log.FromCtx(ctx); logger.Enabled(log.DebugLevel) {
+        logger.Debug("grpc requester dialing", "target", server, "src", req.Src, "dst", req.Dst, "type", req.SegType.String())
+    }
+    dialCtx, cancelF := context.WithTimeout(ctx, DefaultRPCDialTimeout)
+    defer cancelF()
+    conn, err := f.Dialer.Dial(dialCtx, server)
+    if err != nil {
+        return segfetcher.SegmentsReply{}, err
 	}
 	defer conn.Close()
 
