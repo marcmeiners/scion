@@ -360,7 +360,22 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 		return nil, err
 	}
 	if cfg.MaxPaths != 0 && len(paths) > cfg.MaxPaths {
-		paths = paths[:cfg.MaxPaths]
+		// Group paths by source ISD to apply MaxPaths per membership
+		pathsByISD := make(map[addr.ISD][]snet.Path)
+		for _, p := range paths {
+			srcISD := p.Source().ISD()
+			pathsByISD[srcISD] = append(pathsByISD[srcISD], p)
+		}
+		// Limit each membership to MaxPaths and collect results
+		var limitedPaths []snet.Path
+		for _, isdPaths := range pathsByISD {
+			limit := cfg.MaxPaths
+			if len(isdPaths) > limit {
+				isdPaths = isdPaths[:limit]
+			}
+			limitedPaths = append(limitedPaths, isdPaths...)
+		}
+		paths = limitedPaths
 	}
 
 	// If the epic flag is set, filter all paths that do not have

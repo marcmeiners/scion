@@ -149,7 +149,7 @@ On other errors, showpaths will exit with code 2.
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", 5*time.Second, "Timeout")
 	cmd.Flags().StringVar(&flags.cfg.Sequence, "sequence", "", app.SequenceUsage)
 	cmd.Flags().IntVarP(&flags.cfg.MaxPaths, "maxpaths", "m", 10,
-		"Maximum number of paths that are displayed")
+		"Maximum number of paths per ISD membership that are displayed")
 	cmd.Flags().BoolVarP(&flags.extended, "extended", "e", false,
 		"Show extended path meta data information")
 	cmd.Flags().BoolVarP(&flags.cfg.Refresh, "refresh", "r", false,
