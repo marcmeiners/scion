@@ -78,13 +78,31 @@ func Choose(
 	opts ...Option,
 ) (snet.Path, error) {
 	o := applyOption(opts)
-	paths, err := fetchPaths(ctx, conn, remote, o.refresh, o.seq)
+	paths, err := fetchPaths(ctx, conn, remote, o.refresh, o.seq, o.srcIA)
 	if err != nil {
 		return nil, serrors.Wrap("fetching paths", err)
 	}
 	topo, err := daemon.LoadTopology(ctx, conn)
 	if err != nil {
 		return nil, serrors.Wrap("loading topology", err)
+	}
+	localISD := topo.LocalIA.ISD()
+	if o.privateOnly {
+		// Keep only private paths
+		var only []snet.Path
+		for _, p := range paths {
+			intfs := p.Metadata().Interfaces
+			if len(intfs) == 0 {
+				continue
+			}
+			if intfs[0].IA.ISD() != localISD {
+				only = append(only, p)
+			}
+		}
+		if len(only) == 0 {
+			return nil, serrors.New("no private paths available")
+		}
+		paths = only
 	}
 	if o.epic {
 		// Only use paths that support EPIC and intra-AS (empty) paths.
@@ -172,8 +190,9 @@ func fetchPaths(
 	remote addr.IA,
 	refresh bool,
 	seq string,
+	src addr.IA,
 ) ([]snet.Path, error) {
-	allPaths, err := conn.Paths(ctx, remote, 0, daemon.PathReqFlags{Refresh: refresh})
+	allPaths, err := conn.Paths(ctx, remote, src, daemon.PathReqFlags{Refresh: refresh})
 	if err != nil {
 		return nil, serrors.Wrap("retrieving paths", err)
 	}
@@ -319,6 +338,8 @@ type options struct {
 	colorScheme ColorScheme
 	probeCfg    *ProbeConfig
 	epic        bool
+	srcIA       addr.IA
+	privateOnly bool
 }
 
 type Option func(o *options)
@@ -365,4 +386,14 @@ func WithEPIC(epic bool) Option {
 	return func(o *options) {
 		o.epic = epic
 	}
+}
+
+// sets the desired local membership/source IA for path lookup
+func WithSourceIA(src addr.IA) Option {
+	return func(o *options) { o.srcIA = src }
+}
+
+// restricts the selection to paths in private ISDs
+func WithPrivateOnly(v bool) Option {
+	return func(o *options) { o.privateOnly = v }
 }

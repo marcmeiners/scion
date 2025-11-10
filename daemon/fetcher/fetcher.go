@@ -143,6 +143,12 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		return nil, serrors.New("context must have deadline set")
 	}
 
+	log.Debug("sd fetcher: GetPaths request",
+		"src", src,
+		"dst", dst,
+		"refresh", refresh,
+	)
+
 	type candidate struct {
 		pather *segfetcher.Pather
 		dst    addr.IA
@@ -156,6 +162,24 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		}
 		seen[p] = struct{}{}
 		candidates = append(candidates, candidate{pather: p, dst: candidateDst})
+	}
+
+	// if the caller requests a specific source IA (membership), only use the
+	// corresponding pather - derive the destination IA in that ISD if needed
+	if !src.IsZero() {
+		if p, ok := f.perISD[src.ISD()]; ok {
+			target := dst
+			// only rewrite the destination ISD if the requested source ISD is a
+			// private membership
+			if src.ISD() != f.defaultIA.ISD() && dst.ISD() != src.ISD() {
+				if ia, err := addr.IAFrom(src.ISD(), dst.AS()); err == nil {
+					target = ia
+				}
+			}
+			addCandidate(p, target)
+			// kkip adding other candidates, honor explicit membership selection
+			goto COLLECT
+		}
 	}
 
 	// if dst is private only return paths within the provided isd within dst
@@ -182,6 +206,7 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		}
 	}
 
+COLLECT:
 	var (
 		paths []snet.Path
 		errs  serrors.List
