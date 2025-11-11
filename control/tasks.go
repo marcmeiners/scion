@@ -65,8 +65,6 @@ type TasksConfig struct {
 	Inspector             trust.Inspector
 	Metrics               *Metrics
 	DRKeyEngine           *drkey.ServiceEngine
-	//Skip segment creation
-	BeaconOnly bool
 
 	MACGen        func() hash.Hash
 	StaticInfo    func() *beaconing.StaticInfoCfg
@@ -325,26 +323,24 @@ func StartTasks(cfg TasksConfig) (*Tasks, error) {
 		drkeyCleaners []*periodic.Runner
 	)
 	var registrars []*periodic.Runner
-	// Start this stuff only for public isd instances of the class
-	if !cfg.BeaconOnly {
-		segCleaner := pathdb.NewCleaner(cfg.PathDB, "control_pathstorage_segments")
-		segRevCleaner := revcache.NewCleaner(cfg.RevCache, "control_pathstorage_revocation")
-		//nolint:staticcheck // SA1019: fix later (https://github.com/scionproto/scion/issues/4776).
-		pathCleaner = periodic.Start(
-			periodic.Func{
-				Task: func(ctx context.Context) {
-					segCleaner.Run(ctx)
-					segRevCleaner.Run(ctx)
-				},
-				TaskName: "control_pathstorage_cleaner",
+	segCleaner := pathdb.NewCleaner(cfg.PathDB, "control_pathstorage_segments")
+	segRevCleaner := revcache.NewCleaner(cfg.RevCache, "control_pathstorage_revocation")
+	//nolint:staticcheck // SA1019: fix later (https://github.com/scionproto/scion/issues/4776).
+	pathCleaner = periodic.Start(
+		periodic.Func{
+			Task: func(ctx context.Context) {
+				segCleaner.Run(ctx)
+				segRevCleaner.Run(ctx)
 			},
-			10*time.Second,
-			10*time.Second,
-		)
-		drkeyPrefetch = cfg.DRKeyPrefetcher()
-		drkeyCleaners = cfg.DRKeyCleaners()
-		registrars = cfg.SegmentWriters()
-	}
+			TaskName: "control_pathstorage_cleaner",
+		},
+		10*time.Second,
+		10*time.Second,
+	)
+	drkeyPrefetch = cfg.DRKeyPrefetcher()
+	drkeyCleaners = cfg.DRKeyCleaners()
+	registrars = cfg.SegmentWriters()
+
 	return &Tasks{
 		Originator:      cfg.Originator(),
 		Propagator:      cfg.Propagator(),

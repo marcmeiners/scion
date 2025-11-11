@@ -331,7 +331,6 @@ func realMain(ctx context.Context) error {
 			Store:        baseStore,
 			AllowIsdLoop: baseAllowLoop,
 			Policies:     basePolicies,
-			BeaconOnly:   false,
 			IsPrivate:    false,
 		},
 	}
@@ -362,7 +361,6 @@ func realMain(ctx context.Context) error {
 			Store:        store,
 			AllowIsdLoop: allow,
 			Policies:     pol,
-			BeaconOnly:   false,
 			IsPrivate:    true,
 			PrivateISD:   pm.ISD,
 			CertIssuer:   pm.CertIssuer,
@@ -463,7 +461,7 @@ func realMain(ctx context.Context) error {
 					Transport: baseNetwork.Stack.InsecureDialer.Transport,
 					TLSConfig: libconnect.AdaptClientTLS(baseNetwork.Stack.InsecureDialer.TLSConfig),
 					Rewriter:  baseNetwork.Rewriter,
-				}).NewDialer, topo.IA(), sharedCfg.IA),
+				}).NewDialer),
 			},
 			Grpc: trustgrpc.Fetcher{
 				IA:       topo.IA(),
@@ -496,7 +494,7 @@ func realMain(ctx context.Context) error {
 					Transport: baseNetwork.Stack.InsecureDialer.Transport,
 					TLSConfig: libconnect.AdaptClientTLS(baseNetwork.Stack.InsecureDialer.TLSConfig),
 					Rewriter:  baseNetwork.Rewriter,
-				}).NewDialer, topo.IA(), sharedCfg.IA),
+				}).NewDialer),
 			},
 			Grpc: &segfetchergrpc.Requester{
 				Dialer: baseNetwork.GRPCDialer,
@@ -572,13 +570,6 @@ func realMain(ctx context.Context) error {
 				CoreChecker: coreChecker,
 				PathDB:      pathDB,
 			})
-		}
-		if env.IA == topo.IA() {
-			provider.Router = trust.AuthRouter{
-				ISD:    topo.IA().ISD(),
-				DB:     trustDB,
-				Router: segreq.NewRouter(cfg),
-			}
 		}
 	}
 
@@ -913,7 +904,7 @@ func realMain(ctx context.Context) error {
 					Transport: baseNetwork.Stack.Dialer.Transport,
 					TLSConfig: libconnect.AdaptClientTLS(baseNetwork.Stack.Dialer.TLSConfig),
 					Rewriter:  nc.AddressRewriter(),
-				}).NewDialer, topo.IA(), sharedCfg.IA),
+				}).NewDialer),
 				Router:     segreq.NewRouter(fetcherCfg),
 				MaxRetries: 20,
 			},
@@ -1229,7 +1220,6 @@ func realMain(ctx context.Context) error {
 			HiddenPathRegistrationCfg: hpWriterCfg,
 			AllowIsdLoop:              env.AllowIsdLoop,
 			EPIC:                      globalCfg.BS.EPIC,
-			BeaconOnly:                env.BeaconOnly,
 		}
 		if err := tc.InitPlugins(beaconing.ContextWithLocalIA(errCtx, env.IA), env.Policies.RegistrationPolicies()); err != nil {
 			return serrors.Wrap("initializing tasks plugins", err, "ia", env.IA)
@@ -1270,7 +1260,6 @@ type membershipEnv struct {
 	Store        cs.Store
 	AllowIsdLoop bool
 	Policies     loadedPolicies
-	BeaconOnly   bool
 	IsPrivate    bool
 	PrivateISD   addr.ISD
 	Signer       cstrust.RenewingSigner
@@ -1375,7 +1364,7 @@ func wrapConnDialer(base libgrpc.ConnDialer, ia addr.IA) libgrpc.ConnDialer {
 	return membershipConnDialer{base: base, ia: ia}
 }
 
-func wrapEarlyDialer(base libconnect.Dialer, ia addr.IA, baseIA addr.IA) libconnect.Dialer {
+func wrapEarlyDialer(base libconnect.Dialer) libconnect.Dialer {
 	return func(addr net.Addr, opts ...squic.EarlyDialerOption) squic.EarlyDialer {
 		return base(addr, opts...)
 	}
