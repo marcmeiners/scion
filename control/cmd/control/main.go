@@ -67,6 +67,7 @@ import (
 	cstrustmetrics "github.com/scionproto/scion/control/trust/metrics"
 	"github.com/scionproto/scion/pkg/addr"
 	libconnect "github.com/scionproto/scion/pkg/connect"
+	libdrkey "github.com/scionproto/scion/pkg/drkey"
 	"github.com/scionproto/scion/pkg/experimental/hiddenpath"
 	libgrpc "github.com/scionproto/scion/pkg/grpc"
 	"github.com/scionproto/scion/pkg/log"
@@ -75,10 +76,12 @@ import (
 	"github.com/scionproto/scion/pkg/private/serrors"
 	cppb "github.com/scionproto/scion/pkg/proto/control_plane"
 	cpconnect "github.com/scionproto/scion/pkg/proto/control_plane/v1/control_planeconnect"
+	cryptopb "github.com/scionproto/scion/pkg/proto/crypto"
 	dpb "github.com/scionproto/scion/pkg/proto/discovery"
 	dconnect "github.com/scionproto/scion/pkg/proto/discovery/v1/discoveryconnect"
 	"github.com/scionproto/scion/pkg/scrypto"
 	"github.com/scionproto/scion/pkg/scrypto/cppki"
+	"github.com/scionproto/scion/pkg/scrypto/signed"
 	seg "github.com/scionproto/scion/pkg/segment"
 	discoveryext "github.com/scionproto/scion/pkg/segment/extensions/discovery"
 	"github.com/scionproto/scion/pkg/segment/iface"
@@ -107,6 +110,7 @@ import (
 	segfetchergrpc "github.com/scionproto/scion/private/segment/segfetcher/grpc"
 	segfetcherhappy "github.com/scionproto/scion/private/segment/segfetcher/happy"
 	"github.com/scionproto/scion/private/segment/seghandler"
+	infra "github.com/scionproto/scion/private/segment/verifier"
 	"github.com/scionproto/scion/private/service"
 	"github.com/scionproto/scion/private/storage"
 	beaconstoragemetrics "github.com/scionproto/scion/private/storage/beacon/metrics"
@@ -452,6 +456,7 @@ func realMain(ctx context.Context) error {
 		MaxCacheExpiration: globalCfg.TrustEngine.Cache.Expiration.Duration,
 		Cache:              trustengineCache,
 	}
+	// Base/public trust fetching provider (kept for compatibility).
 	provider := trust.FetchingProvider{
 		DB: trustDB,
 		Fetcher: trusthappy.Fetcher{
@@ -472,14 +477,53 @@ func realMain(ctx context.Context) error {
 		Recurser: trust.ASLocalRecurser{IA: topo.IA()},
 		// XXX(roosd): cyclic dependency on router. It is set below.
 	}
-	verifier := compat.Verifier{
-		Verifier: trust.Verifier{
-			Engine:             provider,
-			CacheHits:          cacheHits,
-			MaxCacheExpiration: globalCfg.TrustEngine.Cache.Expiration.Duration,
-			Cache:              trustengineCache,
-		},
+
+	// Build per-membership trust providers using that membership's dialers.
+	trustProviders := make(map[addr.IA]trust.FetchingProvider, len(membershipEnvs))
+	for _, env := range membershipEnvs {
+		netw, ok := membershipNetworks[env.IA]
+		if !ok {
+			continue
+		}
+		trustProviders[env.IA] = trust.FetchingProvider{
+			DB: trustDB,
+			Fetcher: trusthappy.Fetcher{
+				Connect: trustconnect.Fetcher{
+					IA:     env.IA,
+					Dialer: netw.ConnectDialer,
+				},
+				Grpc: trustgrpc.Fetcher{
+					IA:       env.IA,
+					Dialer:   netw.GRPCDialer,
+					Requests: libmetrics.NewPromCounter(trustmetrics.RPC.Fetches),
+				},
+			},
+			Recurser: trust.ASLocalRecurser{IA: env.IA},
+			// Router set below when available.
+		}
 	}
+
+	// Build verifiers per-membership.
+	verifiers := make(map[addr.IA]compat.Verifier, len(membershipEnvs))
+	verifiersByISD := make(map[addr.ISD]compat.Verifier)
+	for _, env := range membershipEnvs {
+		engine := trust.Provider(provider)
+		if tp, ok := trustProviders[env.IA]; ok {
+			engine = tp
+		}
+		v := compat.Verifier{
+			Verifier: trust.Verifier{
+				Engine:             engine,
+				CacheHits:          cacheHits,
+				MaxCacheExpiration: globalCfg.TrustEngine.Cache.Expiration.Duration,
+				Cache:              trustengineCache,
+			},
+		}
+		verifiers[env.IA] = v
+		verifiersByISD[env.IA.ISD()] = v
+	}
+	// Base verifier used for default/public membership.
+	verifier := verifiers[topo.IA()]
 	fetcherCfg := segreq.FetcherConfig{
 		IA:            topo.IA(),
 		MTU:           topo.MTU(),
@@ -547,9 +591,15 @@ func realMain(ctx context.Context) error {
 					},
 				},
 				Inspector: inspector,
-				Verifier:  verifier,
+				Verifier:  verifiers[env.IA],
 			}
 			membershipFetcher = segreq.NewFetcher(cfg)
+		}
+
+		// Ensure per-membership trust providers use a router built with the membership cfg
+		if tp, ok := trustProviders[env.IA]; ok {
+			tp.Router = trust.AuthRouter{ISD: env.IA.ISD(), DB: trustDB, Router: segreq.NewRouter(cfg)}
+			trustProviders[env.IA] = tp
 		}
 
 		forwardLookup.Add(env.IA, &segreq.ForwardingLookup{
@@ -582,8 +632,14 @@ func realMain(ctx context.Context) error {
 	connectIntra := http.NewServeMux()
 
 	// Register trust material related handlers.
+	byIAProviders := make(map[addr.IA]trust.Provider, len(trustProviders))
+	byISDProviders := make(map[addr.ISD]trust.Provider)
+	for ia, tp := range trustProviders {
+		byIAProviders[ia] = tp
+		byISDProviders[ia.ISD()] = tp
+	}
 	trustServer := &cstrustgrpc.MaterialServer{
-		Provider: provider,
+		Provider: trustProviderSelector{def: provider, byIA: byIAProviders, byISD: byISDProviders},
 		IA:       topo.IA(),
 		Requests: libmetrics.NewPromCounter(cstrustmetrics.Handler.Requests),
 	}
@@ -602,7 +658,7 @@ func realMain(ctx context.Context) error {
 			AdditionalLocalIAs: privateIAs,
 			Inserter:           multiInserter,
 			Interfaces:         intfs,
-			Verifier:           verifier,
+			Verifier:           verifierSelector{def: verifier, byIA: verifiers, byISD: verifiersByISD},
 			BeaconsHandled:     libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
 		},
 	}
@@ -644,7 +700,7 @@ func realMain(ctx context.Context) error {
 		registrationServer := &segreggrpc.RegistrationServer{
 			LocalIA: topo.IA(),
 			SegHandler: seghandler.Handler{
-				Verifier: &seghandler.DefaultVerifier{Verifier: verifier},
+				Verifier: &seghandler.DefaultVerifier{Verifier: verifierSelector{def: verifier, byIA: verifiers, byISD: verifiersByISD}},
 				Storage:  &seghandler.DefaultStorage{PathDB: pathDB, RevCache: revCache},
 			},
 			Registrations: libmetrics.NewPromCounter(metrics.SegmentRegistrationsTotal),
@@ -898,6 +954,7 @@ func realMain(ctx context.Context) error {
 		}
 		defer level1DB.Close()
 
+		// Base/public DRKey fetcher (connect + gRPC) using public dialers.
 		drkeyFetcher := drkeyhappy.Fetcher{
 			Connect: &drkeyconnect.Fetcher{
 				Dialer: wrapEarlyDialer((&squic.EarlyDialerFactory{
@@ -917,6 +974,34 @@ func realMain(ctx context.Context) error {
 				MaxRetries: 20,
 			},
 		}
+
+		// Build per-membership DRKey fetchers using that membership's dialers
+		drkeyFetchers := make(map[addr.IA]drkeyhappy.Fetcher, len(membershipEnvs))
+		for _, env := range membershipEnvs {
+			netw, ok := membershipNetworks[env.IA]
+			if !ok {
+				continue
+			}
+			drkeyFetchers[env.IA] = drkeyhappy.Fetcher{
+				Connect: &drkeyconnect.Fetcher{
+					Dialer:     netw.ConnectDialer,
+					Router:     segreq.NewRouter(fetcherCfg),
+					MaxRetries: 20,
+				},
+				Grpc: &drkeygrpc.Fetcher{
+					Dialer:     netw.GRPCDialer,
+					Router:     segreq.NewRouter(fetcherCfg),
+					MaxRetries: 20,
+				},
+			}
+		}
+		// Build ISD-level map for DRKey selector fallbacks.
+		drkeyByISD := make(map[addr.ISD]drkeyhappy.Fetcher)
+		for ia, f := range drkeyFetchers {
+			drkeyByISD[ia.ISD()] = f
+		}
+		// Selector chooses fetcher based on request meta (DstIA/ISD), not ctx.
+		selector := drkeyFetcherSelector{def: drkeyFetcher, byIA: drkeyFetchers, byISD: drkeyByISD}
 		prefetchKeeper, err := drkey.NewLevel1ARC(globalCfg.DRKey.PrefetchEntries)
 		if err != nil {
 			return err
@@ -925,7 +1010,7 @@ func realMain(ctx context.Context) error {
 			SecretBackend:  drkey.NewSecretValueBackend(svDB, masterKey.Key0, epochDuration),
 			LocalIA:        topo.IA(),
 			DB:             level1DB,
-			Fetcher:        &drkeyFetcher,
+			Fetcher:        &selector,
 			PrefetchKeeper: prefetchKeeper,
 		}
 		drkeyService := &drkeygrpc.Server{
@@ -1488,6 +1573,122 @@ func (d sniConnDialer) Dial(ctx context.Context, address net.Addr) (net.Conn, er
 	}
 
 	return dialer.Dial(ctx, address)
+}
+
+// verifierSelector selects a segment verifier based on membership IA.
+type verifierSelector struct {
+	def           compat.Verifier
+	byIA          map[addr.IA]compat.Verifier
+	byISD         map[addr.ISD]compat.Verifier
+	boundIA       addr.IA
+	boundServer   net.Addr
+	boundValidity cppki.Validity
+}
+
+func (s verifierSelector) WithServer(server net.Addr) infra.Verifier {
+	s.boundServer = server
+	return s
+}
+
+func (s verifierSelector) WithIA(ia addr.IA) infra.Verifier {
+	s.boundIA = ia
+	return s
+}
+
+func (s verifierSelector) WithValidity(v cppki.Validity) infra.Verifier {
+	s.boundValidity = v
+	return s
+}
+
+func (s verifierSelector) Verify(ctx context.Context, signedMsg *cryptopb.SignedMessage,
+	associatedData ...[]byte,
+) (*signed.Message, error) {
+	v := s.def
+	// Prefer ISD explicitly bound via WithIA.
+	if !s.boundIA.IsZero() {
+		if pv, ok := s.byIA[s.boundIA]; ok {
+			v = pv
+		} else if pv, ok := s.byISD[s.boundIA.ISD()]; ok {
+			v = pv
+		}
+	}
+	var iv infra.Verifier = v
+	if s.boundServer != nil {
+		iv = iv.WithServer(s.boundServer)
+	}
+	if !s.boundIA.IsZero() {
+		iv = iv.WithIA(s.boundIA)
+	}
+	if s.boundValidity.NotAfter != (time.Time{}) || s.boundValidity.NotBefore != (time.Time{}) {
+		iv = iv.WithValidity(s.boundValidity)
+	}
+	return iv.Verify(ctx, signedMsg, associatedData...)
+}
+
+// trustProviderSelector selects a trust.Provider based on the ISD derived from the request (TRCID/ChainQuery)
+type trustProviderSelector struct {
+	def   trust.Provider
+	byIA  map[addr.IA]trust.Provider
+	byISD map[addr.ISD]trust.Provider
+}
+
+func (s trustProviderSelector) selectByISD(isd addr.ISD) (trust.Provider, bool) {
+	if p, ok := s.byISD[isd]; ok {
+		log.Debug("trust provider selector matched (isd)", "isd", isd)
+		return p, true
+	}
+	return nil, false
+}
+
+func (s trustProviderSelector) NotifyTRC(ctx context.Context, id cppki.TRCID, opts ...trust.Option) error {
+	if p, ok := s.selectByISD(id.ISD); ok {
+		return p.NotifyTRC(ctx, id, opts...)
+	}
+	log.Debug("trust provider selector fallback (NotifyTRC)")
+	return s.def.NotifyTRC(ctx, id, opts...)
+}
+
+func (s trustProviderSelector) GetChains(ctx context.Context, q trust.ChainQuery, opts ...trust.Option) ([][]*x509.Certificate, error) {
+	// Prefer selecting by the ISD of the requested IA if ctx IA is missing.
+	if !q.IA.IsWildcard() {
+		if p, ok := s.selectByISD(q.IA.ISD()); ok {
+			return p.GetChains(ctx, q, opts...)
+		}
+	}
+	log.Debug("trust provider selector fallback (GetChains)")
+	return s.def.GetChains(ctx, q, opts...)
+}
+
+func (s trustProviderSelector) GetSignedTRC(ctx context.Context, id cppki.TRCID, opts ...trust.Option) (cppki.SignedTRC, error) {
+	if p, ok := s.selectByISD(id.ISD); ok {
+		return p.GetSignedTRC(ctx, id, opts...)
+	}
+	log.Debug("trust provider selector fallback (GetSignedTRC)")
+	return s.def.GetSignedTRC(ctx, id, opts...)
+}
+
+// drkeyFetcherSelector selects a DRKey fetcher based on the request metadata
+type drkeyFetcherSelector struct {
+	def   drkeyhappy.Fetcher
+	byIA  map[addr.IA]drkeyhappy.Fetcher
+	byISD map[addr.ISD]drkeyhappy.Fetcher
+}
+
+func (s drkeyFetcherSelector) Level1(ctx context.Context, meta libdrkey.Level1Meta) (libdrkey.Level1Key, error) {
+	// Choose fetcher by the membership for which we are acting
+	// For a remote fetch, the local AS is typically meta.DstIA
+	if sel, ok := s.byIA[meta.DstIA]; ok {
+		log.Debug("drkey fetcher selector matched (dst)", "dst_ia", meta.DstIA)
+		return sel.Level1(ctx, meta)
+	}
+	if meta.DstIA != 0 {
+		if sel, ok := s.byISD[meta.DstIA.ISD()]; ok {
+			log.Debug("drkey fetcher selector matched (dst isd)", "isd", meta.DstIA.ISD())
+			return sel.Level1(ctx, meta)
+		}
+	}
+	log.Debug("drkey fetcher selector fallback (default)")
+	return s.def.Level1(ctx, meta)
 }
 
 func newSNIDialer(stack *infraenv.QUICStack, ia addr.IA) libgrpc.ConnDialer {

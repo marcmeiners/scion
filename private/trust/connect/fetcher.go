@@ -24,6 +24,7 @@ import (
 
 	"github.com/scionproto/scion/pkg/addr"
 	libconnect "github.com/scionproto/scion/pkg/connect"
+	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/proto/control_plane/v1/control_planeconnect"
 	"github.com/scionproto/scion/pkg/scrypto/cppki"
@@ -42,6 +43,13 @@ type Fetcher struct {
 func (f Fetcher) Chains(ctx context.Context, query trust.ChainQuery,
 	server net.Addr) ([][]*x509.Certificate, error) {
 
+	logger := log.FromCtx(ctx)
+	logger.Debug("Fetch certificate chain via connect",
+		"local_ia", f.IA,
+		"server", server,
+		"isd_as", query.IA,
+		"validity", query.Validity.String(),
+	)
 	dialer := f.Dialer(server)
 	client := control_planeconnect.NewTrustMaterialServiceClient(
 		libconnect.HTTPClient{
@@ -62,6 +70,11 @@ func (f Fetcher) Chains(ctx context.Context, query trust.ChainQuery,
 	if err := grpc.CheckChainsMatchQuery(query, chains); err != nil {
 		return nil, serrors.Wrap("chains do not match query", err)
 	}
+	logger.Debug("Received certificate chains via connect",
+		"local_ia", f.IA,
+		"isd_as", query.IA,
+		"chains", len(chains),
+	)
 	return chains, nil
 }
 
