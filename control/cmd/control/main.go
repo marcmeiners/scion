@@ -504,7 +504,6 @@ func realMain(ctx context.Context) error {
 	}
 
 	// Build verifiers per-membership.
-	verifiers := make(map[addr.IA]compat.Verifier, len(membershipEnvs))
 	verifiersByISD := make(map[addr.ISD]compat.Verifier)
 	for _, env := range membershipEnvs {
 		engine := trust.Provider(provider)
@@ -519,11 +518,10 @@ func realMain(ctx context.Context) error {
 				Cache:              trustengineCache,
 			},
 		}
-		verifiers[env.IA] = v
 		verifiersByISD[env.IA.ISD()] = v
 	}
 	// Base verifier used for default/public membership.
-	verifier := verifiers[topo.IA()]
+	verifier := verifiersByISD[topo.IA().ISD()]
 	fetcherCfg := segreq.FetcherConfig{
 		IA:            topo.IA(),
 		MTU:           topo.MTU(),
@@ -591,7 +589,7 @@ func realMain(ctx context.Context) error {
 					},
 				},
 				Inspector: inspector,
-				Verifier:  verifiers[env.IA],
+				Verifier:  verifiersByISD[env.IA.ISD()],
 			}
 			membershipFetcher = segreq.NewFetcher(cfg)
 		}
@@ -632,14 +630,12 @@ func realMain(ctx context.Context) error {
 	connectIntra := http.NewServeMux()
 
 	// Register trust material related handlers.
-	byIAProviders := make(map[addr.IA]trust.Provider, len(trustProviders))
 	byISDProviders := make(map[addr.ISD]trust.Provider)
 	for ia, tp := range trustProviders {
-		byIAProviders[ia] = tp
 		byISDProviders[ia.ISD()] = tp
 	}
 	trustServer := &cstrustgrpc.MaterialServer{
-		Provider: trustProviderSelector{def: provider, byIA: byIAProviders, byISD: byISDProviders},
+		Provider: trustProviderSelector{def: provider, byISD: byISDProviders},
 		IA:       topo.IA(),
 		Requests: libmetrics.NewPromCounter(cstrustmetrics.Handler.Requests),
 	}
@@ -658,7 +654,7 @@ func realMain(ctx context.Context) error {
 			AdditionalLocalIAs: privateIAs,
 			Inserter:           multiInserter,
 			Interfaces:         intfs,
-			Verifier:           verifierSelector{def: verifier, byIA: verifiers, byISD: verifiersByISD},
+			Verifier:           verifierSelector{def: verifier, byISD: verifiersByISD},
 			BeaconsHandled:     libmetrics.NewPromCounter(metrics.BeaconingReceivedTotal),
 		},
 	}
@@ -700,7 +696,7 @@ func realMain(ctx context.Context) error {
 		registrationServer := &segreggrpc.RegistrationServer{
 			LocalIA: topo.IA(),
 			SegHandler: seghandler.Handler{
-				Verifier: &seghandler.DefaultVerifier{Verifier: verifierSelector{def: verifier, byIA: verifiers, byISD: verifiersByISD}},
+				Verifier: &seghandler.DefaultVerifier{Verifier: verifierSelector{def: verifier, byISD: verifiersByISD}},
 				Storage:  &seghandler.DefaultStorage{PathDB: pathDB, RevCache: revCache},
 			},
 			Registrations: libmetrics.NewPromCounter(metrics.SegmentRegistrationsTotal),
@@ -976,13 +972,13 @@ func realMain(ctx context.Context) error {
 		}
 
 		// Build per-membership DRKey fetchers using that membership's dialers
-		drkeyFetchers := make(map[addr.IA]drkeyhappy.Fetcher, len(membershipEnvs))
+		drkeyByISD := make(map[addr.ISD]drkeyhappy.Fetcher, len(membershipEnvs))
 		for _, env := range membershipEnvs {
 			netw, ok := membershipNetworks[env.IA]
 			if !ok {
 				continue
 			}
-			drkeyFetchers[env.IA] = drkeyhappy.Fetcher{
+			drkeyByISD[env.IA.ISD()] = drkeyhappy.Fetcher{
 				Connect: &drkeyconnect.Fetcher{
 					Dialer:     netw.ConnectDialer,
 					Router:     segreq.NewRouter(fetcherCfg),
@@ -995,13 +991,7 @@ func realMain(ctx context.Context) error {
 				},
 			}
 		}
-		// Build ISD-level map for DRKey selector fallbacks.
-		drkeyByISD := make(map[addr.ISD]drkeyhappy.Fetcher)
-		for ia, f := range drkeyFetchers {
-			drkeyByISD[ia.ISD()] = f
-		}
-		// Selector chooses fetcher based on request meta (DstIA/ISD), not ctx.
-		selector := drkeyFetcherSelector{def: drkeyFetcher, byIA: drkeyFetchers, byISD: drkeyByISD}
+		selector := drkeyFetcherSelector{def: drkeyFetcher, byISD: drkeyByISD}
 		prefetchKeeper, err := drkey.NewLevel1ARC(globalCfg.DRKey.PrefetchEntries)
 		if err != nil {
 			return err
@@ -1578,7 +1568,6 @@ func (d sniConnDialer) Dial(ctx context.Context, address net.Addr) (net.Conn, er
 // verifierSelector selects a segment verifier based on membership IA.
 type verifierSelector struct {
 	def           compat.Verifier
-	byIA          map[addr.IA]compat.Verifier
 	byISD         map[addr.ISD]compat.Verifier
 	boundIA       addr.IA
 	boundServer   net.Addr
@@ -1606,9 +1595,7 @@ func (s verifierSelector) Verify(ctx context.Context, signedMsg *cryptopb.Signed
 	v := s.def
 	// Prefer ISD explicitly bound via WithIA.
 	if !s.boundIA.IsZero() {
-		if pv, ok := s.byIA[s.boundIA]; ok {
-			v = pv
-		} else if pv, ok := s.byISD[s.boundIA.ISD()]; ok {
+		if pv, ok := s.byISD[s.boundIA.ISD()]; ok {
 			v = pv
 		}
 	}
@@ -1628,7 +1615,6 @@ func (s verifierSelector) Verify(ctx context.Context, signedMsg *cryptopb.Signed
 // trustProviderSelector selects a trust.Provider based on the ISD derived from the request (TRCID/ChainQuery)
 type trustProviderSelector struct {
 	def   trust.Provider
-	byIA  map[addr.IA]trust.Provider
 	byISD map[addr.ISD]trust.Provider
 }
 
@@ -1670,17 +1656,11 @@ func (s trustProviderSelector) GetSignedTRC(ctx context.Context, id cppki.TRCID,
 // drkeyFetcherSelector selects a DRKey fetcher based on the request metadata
 type drkeyFetcherSelector struct {
 	def   drkeyhappy.Fetcher
-	byIA  map[addr.IA]drkeyhappy.Fetcher
 	byISD map[addr.ISD]drkeyhappy.Fetcher
 }
 
 func (s drkeyFetcherSelector) Level1(ctx context.Context, meta libdrkey.Level1Meta) (libdrkey.Level1Key, error) {
 	// Choose fetcher by the membership for which we are acting
-	// For a remote fetch, the local AS is typically meta.DstIA
-	if sel, ok := s.byIA[meta.DstIA]; ok {
-		log.Debug("drkey fetcher selector matched (dst)", "dst_ia", meta.DstIA)
-		return sel.Level1(ctx, meta)
-	}
 	if meta.DstIA != 0 {
 		if sel, ok := s.byISD[meta.DstIA.ISD()]; ok {
 			log.Debug("drkey fetcher selector matched (dst isd)", "isd", meta.DstIA.ISD())
