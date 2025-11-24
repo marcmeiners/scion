@@ -78,31 +78,13 @@ func Choose(
 	opts ...Option,
 ) (snet.Path, error) {
 	o := applyOption(opts)
-	paths, err := fetchPaths(ctx, conn, remote, o.refresh, o.seq, o.srcIA)
+	paths, err := fetchPaths(ctx, conn, remote, o.refresh, o.seq, o.srcIA, o.privateOnly)
 	if err != nil {
 		return nil, serrors.Wrap("fetching paths", err)
 	}
 	topo, err := daemon.LoadTopology(ctx, conn)
 	if err != nil {
 		return nil, serrors.Wrap("loading topology", err)
-	}
-	localISD := topo.LocalIA.ISD()
-	if o.privateOnly {
-		// Keep only private paths
-		var only []snet.Path
-		for _, p := range paths {
-			intfs := p.Metadata().Interfaces
-			if len(intfs) == 0 {
-				continue
-			}
-			if intfs[0].IA.ISD() != localISD {
-				only = append(only, p)
-			}
-		}
-		if len(only) == 0 {
-			return nil, serrors.New("no private paths available")
-		}
-		paths = only
 	}
 	if o.epic {
 		// Only use paths that support EPIC and intra-AS (empty) paths.
@@ -191,8 +173,12 @@ func fetchPaths(
 	refresh bool,
 	seq string,
 	src addr.IA,
+	privateOnly bool,
 ) ([]snet.Path, error) {
-	allPaths, err := conn.Paths(ctx, remote, src, daemon.PathReqFlags{Refresh: refresh})
+	allPaths, err := conn.Paths(ctx, remote, src, daemon.PathReqFlags{
+		Refresh:     refresh,
+		PrivateOnly: privateOnly,
+	})
 	if err != nil {
 		return nil, serrors.Wrap("retrieving paths", err)
 	}

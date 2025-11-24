@@ -27,8 +27,9 @@ import (
 )
 
 type PathReqFlags struct {
-	Refresh bool
-	Hidden  bool
+	Refresh     bool
+	Hidden      bool
+	PrivateOnly bool
 }
 
 // ASInfo provides information about the local AS.

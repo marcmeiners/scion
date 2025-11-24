@@ -87,6 +87,7 @@ type PathsRequest struct {
 	DestinationIsdAs uint64                 `protobuf:"varint,2,opt,name=destination_isd_as,json=destinationIsdAs,proto3" json:"destination_isd_as,omitempty"`
 	Refresh          bool                   `protobuf:"varint,3,opt,name=refresh,proto3" json:"refresh,omitempty"`
 	Hidden           bool                   `protobuf:"varint,4,opt,name=hidden,proto3" json:"hidden,omitempty"`
+	PrivateOnly      bool                   `protobuf:"varint,5,opt,name=private_only,json=privateOnly,proto3" json:"private_only,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -145,6 +146,13 @@ func (x *PathsRequest) GetRefresh() bool {
 func (x *PathsRequest) GetHidden() bool {
 	if x != nil {
 		return x.Hidden
+	}
+	return false
+}
+
+func (x *PathsRequest) GetPrivateOnly() bool {
+	if x != nil {
+		return x.PrivateOnly
 	}
 	return false
 }
@@ -1549,12 +1557,13 @@ var File_proto_daemon_v1_daemon_proto protoreflect.FileDescriptor
 
 const file_proto_daemon_v1_daemon_proto_rawDesc = "" +
 	"\n" +
-	"\x1cproto/daemon/v1/daemon.proto\x12\x0fproto.daemon.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1aproto/drkey/v1/drkey.proto\"\x92\x01\n" +
+	"\x1cproto/daemon/v1/daemon.proto\x12\x0fproto.daemon.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1aproto/drkey/v1/drkey.proto\"\xb5\x01\n" +
 	"\fPathsRequest\x12\"\n" +
 	"\rsource_isd_as\x18\x01 \x01(\x04R\vsourceIsdAs\x12,\n" +
 	"\x12destination_isd_as\x18\x02 \x01(\x04R\x10destinationIsdAs\x12\x18\n" +
 	"\arefresh\x18\x03 \x01(\bR\arefresh\x12\x16\n" +
-	"\x06hidden\x18\x04 \x01(\bR\x06hidden\"<\n" +
+	"\x06hidden\x18\x04 \x01(\bR\x06hidden\x12!\n" +
+	"\fprivate_only\x18\x05 \x01(\bR\vprivateOnly\"<\n" +
 	"\rPathsResponse\x12+\n" +
 	"\x05paths\x18\x01 \x03(\v2\x15.proto.daemon.v1.PathR\x05paths\"\xea\x05\n" +
 	"\x04Path\x12\x10\n" +

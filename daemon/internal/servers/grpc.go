@@ -95,9 +95,9 @@ func (s *DaemonServer) paths(ctx context.Context,
 	srcIA, dstIA := addr.IA(req.SourceIsdAs), addr.IA(req.DestinationIsdAs)
 	go func() {
 		defer log.HandlePanic()
-		s.backgroundPaths(ctx, srcIA, dstIA, req.Refresh)
+		s.backgroundPaths(ctx, srcIA, dstIA, req.Refresh, req.PrivateOnly)
 	}()
-	paths, err := s.fetchPaths(ctx, &s.foregroundPathDedupe, srcIA, dstIA, req.Refresh)
+	paths, err := s.fetchPaths(ctx, &s.foregroundPathDedupe, srcIA, dstIA, req.Refresh, req.PrivateOnly)
 	if err != nil {
 		log.FromCtx(ctx).Debug("Fetching paths", "err", err,
 			"src", srcIA, "dst", dstIA, "refresh", req.Refresh)
@@ -115,10 +115,11 @@ func (s *DaemonServer) fetchPaths(
 	group *singleflight.Group,
 	src, dst addr.IA,
 	refresh bool,
+	privateOnly bool,
 ) ([]snet.Path, error) {
-	r, err, _ := group.Do(fmt.Sprintf("%s%s%t", src, dst, refresh),
+	r, err, _ := group.Do(fmt.Sprintf("%s%s%t%t", src, dst, refresh, privateOnly),
 		func() (any, error) {
-			return s.Fetcher.GetPaths(ctx, src, dst, refresh)
+			return s.Fetcher.GetPaths(ctx, src, dst, refresh, privateOnly)
 		},
 	)
 	// just cast to the correct type, ignore the "ok", since that can only be
@@ -220,7 +221,7 @@ func linkTypeToPB(lt snet.LinkType) daemon.LinkType {
 	}
 }
 
-func (s *DaemonServer) backgroundPaths(origCtx context.Context, src, dst addr.IA, refresh bool) {
+func (s *DaemonServer) backgroundPaths(origCtx context.Context, src, dst addr.IA, refresh bool, privateOnly bool) {
 	backgroundTimeout := 5 * time.Second
 	deadline, ok := origCtx.Deadline()
 	if !ok || time.Until(deadline) > backgroundTimeout {
@@ -238,9 +239,9 @@ func (s *DaemonServer) backgroundPaths(origCtx context.Context, src, dst addr.IA
 	span, ctx := opentracing.StartSpanFromContext(ctx, "fetch.paths.background", spanOpts...)
 	defer span.Finish()
 	//nolint:contextcheck // false positive.
-	if _, err := s.fetchPaths(ctx, &s.backgroundPathDedupe, src, dst, refresh); err != nil {
+	if _, err := s.fetchPaths(ctx, &s.backgroundPathDedupe, src, dst, refresh, privateOnly); err != nil {
 		log.FromCtx(ctx).Debug("Error fetching paths (background)", "err", err,
-			"src", src, "dst", dst, "refresh", refresh)
+			"src", src, "dst", dst, "refresh", refresh, "privateOnly", privateOnly)
 	}
 }
 

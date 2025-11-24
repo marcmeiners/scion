@@ -113,6 +113,7 @@ func (c grpcConn) Paths(ctx context.Context, dst, src addr.IA,
 		DestinationIsdAs: uint64(dst),
 		Hidden:           f.Hidden,
 		Refresh:          f.Refresh,
+		PrivateOnly:      f.PrivateOnly,
 	})
 	if err != nil {
 		c.metrics.incPaths(err)

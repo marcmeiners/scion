@@ -43,7 +43,7 @@ type TrustStore interface {
 }
 
 type Fetcher interface {
-	GetPaths(ctx context.Context, src, dst addr.IA, refresh bool) ([]snet.Path, error)
+	GetPaths(ctx context.Context, src, dst addr.IA, refresh bool, privateOnly bool) ([]snet.Path, error)
 }
 
 type fetcher struct {
@@ -137,8 +137,9 @@ func NewFetcher(cfg FetcherConfig) Fetcher {
 
 // GetPaths uses the pather to get paths from src to dst.
 // src may be either zero or the local IA (nothing else).
+// privateOnly, if true, restricts the search to private ISD memberships only.
 func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
-	refresh bool) ([]snet.Path, error) {
+	refresh bool, privateOnly bool) ([]snet.Path, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		return nil, serrors.New("context must have deadline set")
 	}
@@ -147,6 +148,7 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		"src", src,
 		"dst", dst,
 		"refresh", refresh,
+		"privateOnly", privateOnly,
 	)
 
 	type candidate struct {
@@ -189,6 +191,10 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		// if dst is public add public paths and all possible private paths
 		for isd, p := range f.perISD {
 			if isd == f.defaultIA.ISD() {
+				// skip default (public) ISD if privateOnly is requested
+				if privateOnly {
+					continue
+				}
 				// leave public ia case unchanged
 				addCandidate(p, dst)
 			} else {

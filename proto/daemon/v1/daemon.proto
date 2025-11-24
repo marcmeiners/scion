@@ -56,6 +56,8 @@ message PathsRequest {
     bool refresh = 3;
     // Request hidden paths instead of standard paths.
     bool hidden = 4;
+    // If true, only return paths in private ISDs (non-default membership).
+    bool private_only = 5;
 }
 
 message PathsResponse {
