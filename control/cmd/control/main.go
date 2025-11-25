@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"hash"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -192,6 +193,11 @@ func realMain(ctx context.Context) error {
 		QueriesTotal: libmetrics.NewPromCounter(metrics.PathDBQueriesTotal),
 	})
 	defer pathDB.Close()
+
+	membershipKeyDerivation, err := cs.MembershipMACGenFactory(globalCfg.General.ConfigDir)
+	if err != nil {
+		return err
+	}
 
 	macGen, err := cs.MACGenFactory(globalCfg.General.ConfigDir)
 	if err != nil {
@@ -1229,6 +1235,21 @@ func realMain(ctx context.Context) error {
 		signerRef := env.Signer
 		propFilterCopy := propFilter
 		origFilterCopy := origFilter
+
+		// derive per-membership MAC generator
+		// for private ISDs, derives a unique key to prevent segment substitution
+		var membershipMACGen func() hash.Hash
+		if env.IA.ISD() == 0 {
+			membershipMACGen = macGen
+		} else {
+			var err error
+			membershipMACGen, err = membershipKeyDerivation.MACFactory(env.PrivateISD)
+			if err != nil {
+				return serrors.Wrap("creating MAC generator for private ISD", err,
+					"isd", env.PrivateISD, "membership_ia", env.IA)
+			}
+		}
+
 		tc := cs.TasksConfig{
 			IA:            env.IA,
 			Core:          env.Core,
@@ -1272,7 +1293,7 @@ func realMain(ctx context.Context) error {
 			Inspector:   inspector,
 			Metrics:     metrics,
 			DRKeyEngine: drkeyEngine,
-			MACGen:      macGen,
+			MACGen:      membershipMACGen,
 			NextHopper:  topo,
 			StaticInfo:  func() *beaconing.StaticInfoCfg { return staticInfo },
 

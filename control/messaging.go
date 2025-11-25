@@ -23,7 +23,7 @@ import (
 	"github.com/scionproto/scion/private/keyconf"
 )
 
-// MACGenFactory creates a MAC factory
+// MACGenFactory creates a MAC factory for the public/default membership
 func MACGenFactory(configDir string) (func() hash.Hash, error) {
 	mk, err := keyconf.LoadMaster(filepath.Join(configDir, "keys"))
 	if err != nil {
@@ -34,4 +34,18 @@ func MACGenFactory(configDir string) (func() hash.Hash, error) {
 		return nil, err
 	}
 	return hfMacFactory, nil
+}
+
+// creates a key derivation instance that can generate per-membership MAC factories
+// This is used to derive separate forwarding keys for each private ISD membership
+func MembershipMACGenFactory(configDir string) (*scrypto.MembershipKeyDerivation, error) {
+	mk, err := keyconf.LoadMaster(filepath.Join(configDir, "keys"))
+	if err != nil {
+		return nil, serrors.Wrap("loading master key", err)
+	}
+	keyDerivation, err := scrypto.NewMembershipKeyDerivation(mk.Key0)
+	if err != nil {
+		return nil, serrors.Wrap("creating membership key derivation", err)
+	}
+	return keyDerivation, nil
 }
