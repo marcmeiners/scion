@@ -193,6 +193,12 @@ func (c *Connector) SetKey(ia addr.IA, index int, key []byte) error {
 	return c.DataPlane.SetKey(key)
 }
 
+func (c *Connector) SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD) error {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return c.DataPlane.SetMembershipKeys(keyDerivation, isds)
+}
+
 func (c *Connector) ListInternalInterfaces() ([]control.InternalInterface, error) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()

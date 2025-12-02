@@ -390,9 +390,24 @@ func realMain(ctx context.Context) error {
 	for i := range membershipEnvs {
 		env := &membershipEnvs[i]
 
+		// derive per-membership MAC generator for one-hop paths
+		var membershipMACGen func() hash.Hash
+		if env.PrivateISD == 0 {
+			// use default MAC
+			membershipMACGen = macGen
+		} else {
+			// use derived membership MAC
+			var err error
+			membershipMACGen, err = membershipKeyDerivation.MACFactory(env.PrivateISD)
+			if err != nil {
+				return serrors.Wrap("creating MAC generator for private ISD", err,
+					"isd", env.PrivateISD, "membership_ia", env.IA)
+			}
+		}
+
 		rewriter := &onehop.AddressRewriter{
 			Rewriter: sharedCfg.AddressRewriter(),
-			MAC:      macGen(),
+			MAC:      membershipMACGen(),
 		}
 
 		grpcDialer := &libgrpc.QUICDialer{Rewriter: rewriter, Dialer: newSNIDialer(sharedStack, env.IA)}
@@ -1239,7 +1254,7 @@ func realMain(ctx context.Context) error {
 		// derive per-membership MAC generator
 		// for private ISDs, derives a unique key to prevent segment substitution
 		var membershipMACGen func() hash.Hash
-		if env.IA.ISD() == 0 {
+		if env.PrivateISD == 0 {
 			membershipMACGen = macGen
 		} else {
 			var err error

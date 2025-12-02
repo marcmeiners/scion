@@ -25,6 +25,7 @@ import (
 
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/private/serrors"
+	"github.com/scionproto/scion/pkg/scrypto"
 	"github.com/scionproto/scion/pkg/segment/iface"
 	"github.com/scionproto/scion/private/topology"
 )
@@ -32,14 +33,15 @@ import (
 // Dataplane is the interface that this controller or the http status handler expect from the
 // Dataplane.
 type Dataplane interface {
-    CreateIACtx(ia addr.IA) error
-    AddLocalIA(ia addr.IA) error
-    AddInternalInterface(ia addr.IA, localHost addr.Host, provider, local string) error
-    AddExternalInterface(
-        localIfID iface.ID, info LinkInfo, localHost, remoteHost addr.Host, owned bool) error
-    AddSvc(ia addr.IA, svc addr.SVC, a addr.Host, port uint16) error
-    DelSvc(ia addr.IA, svc addr.SVC, a addr.Host, port uint16) error
+	CreateIACtx(ia addr.IA) error
+	AddLocalIA(ia addr.IA) error
+	AddInternalInterface(ia addr.IA, localHost addr.Host, provider, local string) error
+	AddExternalInterface(
+		localIfID iface.ID, info LinkInfo, localHost, remoteHost addr.Host, owned bool) error
+	AddSvc(ia addr.IA, svc addr.SVC, a addr.Host, port uint16) error
+	DelSvc(ia addr.IA, svc addr.SVC, a addr.Host, port uint16) error
 	SetKey(ia addr.IA, index int, key []byte) error
+	SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD) error
 	SetPortRange(start, end uint16)
 }
 
@@ -137,6 +139,22 @@ func ConfigDataplane(dp Dataplane, cfg *Config) error {
 		key0 := DeriveHFMacKey(cfg.MasterKeys.Key0)
 		if err := dp.SetKey(cfg.IA, 0, key0); err != nil {
 			return err
+		}
+
+		// set per-membership forwarding keys for private ISDs
+		memberships := cfg.Topo.PrivateISDMemberships()
+		if len(memberships) > 0 {
+			keyDerivation, err := scrypto.NewMembershipKeyDerivation(cfg.MasterKeys.Key0)
+			if err != nil {
+				return serrors.Wrap("creating membership key derivation", err)
+			}
+			isds := make([]addr.ISD, 0, len(memberships))
+			for _, m := range memberships {
+				isds = append(isds, m.ISD)
+			}
+			if err := dp.SetMembershipKeys(keyDerivation, isds); err != nil {
+				return serrors.Wrap("setting membership forwarding keys", err)
+			}
 		}
 	}
 

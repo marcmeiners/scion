@@ -229,6 +229,7 @@ type dataPlane struct {
 	neighborIAs         [math.MaxUint16 + 1]addr.IA
 	localHost           addr.Host
 	macFactory          func() hash.Hash
+	macFactories        map[addr.ISD]func() hash.Hash
 	localIA             addr.IA
 	localIAs            map[addr.IA]struct{}
 	mtx                 sync.Mutex
@@ -441,6 +442,41 @@ func (d *dataPlane) SetKey(key []byte) error {
 		return mac
 	}
 	return nil
+}
+
+func (d *dataPlane) SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD) error {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.isRunning() {
+		return errModifyExisting
+	}
+	if d.macFactories != nil {
+		return errAlreadySet
+	}
+	kd, ok := keyDerivation.(*scrypto.MembershipKeyDerivation)
+	if !ok {
+		return serrors.New("invalid key derivation type")
+	}
+	d.macFactories = make(map[addr.ISD]func() hash.Hash)
+	for _, isd := range isds {
+		factory, err := kd.MACFactory(isd)
+		if err != nil {
+			return serrors.Wrap("creating MAC factory for ISD", err, "isd", isd)
+		}
+		d.macFactories[isd] = factory
+		log.Info("Registered membership ISD", "isd", isd)
+	}
+	log.Info("SetMembershipKeys complete", "num_isds", len(isds))
+	return nil
+}
+
+func (d *dataPlane) getMACFactory(isd addr.ISD) func() hash.Hash {
+	if d.macFactories != nil {
+		if factory, ok := d.macFactories[isd]; ok {
+			return factory
+		}
+	}
+	return d.macFactory
 }
 
 func (d *dataPlane) SetPortRange(start, end uint16) {
@@ -1520,7 +1556,9 @@ func (p *scionPacketProcessor) currentHopPointer() uint16 {
 }
 
 func (p *scionPacketProcessor) verifyCurrentMAC() disposition {
-	fullMac := path.FullMAC(p.mac, p.infoField, p.hopField, p.macInputBuffer[:path.MACBufferSize])
+	macFactory := p.d.getMACFactory(p.scionLayer.DstIA.ISD())
+	mac := macFactory()
+	fullMac := path.FullMAC(mac, p.infoField, p.hopField, p.macInputBuffer[:path.MACBufferSize])
 	if subtle.ConstantTimeCompare(p.hopField.Mac[:path.MacLen], fullMac[:path.MacLen]) == 0 {
 		log.Debug("SCMP response", "cause", errMacVerificationFailed,
 			"expected", fullMac[:path.MacLen],
