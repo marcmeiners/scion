@@ -232,6 +232,7 @@ type dataPlane struct {
 	macFactories        map[addr.ISD]func() hash.Hash
 	localIA             addr.IA
 	localIAs            map[addr.IA]struct{}
+	localIAByISD        map[addr.ISD]addr.IA
 	mtx                 sync.Mutex
 	running             atomic.Bool
 	Metrics             *Metrics
@@ -385,7 +386,11 @@ func (d *dataPlane) SetIA(ia addr.IA) error {
 	if d.localIAs == nil {
 		d.localIAs = make(map[addr.IA]struct{})
 	}
+	if d.localIAByISD == nil {
+		d.localIAByISD = make(map[addr.ISD]addr.IA)
+	}
 	d.localIAs[ia] = struct{}{}
+	d.localIAByISD[ia.ISD()] = ia
 	return nil
 }
 
@@ -403,7 +408,11 @@ func (d *dataPlane) AddLocalIA(ia addr.IA) error {
 	if d.localIAs == nil {
 		d.localIAs = make(map[addr.IA]struct{})
 	}
+	if d.localIAByISD == nil {
+		d.localIAByISD = make(map[addr.ISD]addr.IA)
+	}
 	d.localIAs[ia] = struct{}{}
+	d.localIAByISD[ia.ISD()] = ia
 	return nil
 }
 
@@ -417,6 +426,16 @@ func (d *dataPlane) hasLocalIA(ia addr.IA) bool {
 	}
 	_, ok := d.localIAs[ia]
 	return ok
+}
+
+// localIAForISD returns the local IA that belongs to the given ISD if this
+// dataplane serves it (including private memberships). Falls back to the
+// primary localIA otherwise.
+func (d *dataPlane) localIAForISD(isd addr.ISD) addr.IA {
+	if d.localIAByISD == nil {
+		return 0
+	}
+	return d.localIAByISD[isd]
 }
 
 // SetKey sets the key used for MAC verification. The key provided here should
@@ -979,12 +998,12 @@ func (p *slowPathPacketProcessor) reset() {
 	p.e2eLayer = slayers.EndToEndExtnSkipper{}
 }
 
-// replyIA returns the IA to use for SCMP replies created on the slow path.
-// If the current packet's destination IA matches one of the dataplane's
-// local IAs, use that; otherwise fall back to the default local IA.
+// replyIA returns the local IA to use for SCMP replies created on the slow
+// path. It selects the local IA that matches the destination ISD (public or
+// private membership), falling back to the primary local IA.
 func (p *slowPathPacketProcessor) replyIA() addr.IA {
-	if p.d.hasLocalIA(p.scionLayer.DstIA) {
-		return p.scionLayer.DstIA
+	if ia := p.d.localIAForISD(p.scionLayer.DstIA.ISD()); ia != 0 {
+		return ia
 	}
 	return p.d.localIA
 }
@@ -1082,12 +1101,15 @@ func (p *scionPacketProcessor) reset() error {
 	return nil
 }
 
-// replyIA returns the IA to use for SCMP replies and other local-originated
-// packets. If a specific local IA matched the packet destination, that IA is
-// used; otherwise, fall back to the dataplane's default localIA.
+// replyIA returns the local IA to use for SCMP replies and other
+// local-originated packets. It picks the local IA that matches the destination
+// ISD (public or private membership), falling back to the primary local IA.
 func (p *scionPacketProcessor) replyIA() addr.IA {
 	if p.matchedLocalIA != 0 {
 		return p.matchedLocalIA
+	}
+	if ia := p.d.localIAForISD(p.scionLayer.DstIA.ISD()); ia != 0 {
+		return ia
 	}
 	return p.d.localIA
 }
@@ -1373,6 +1395,7 @@ func (p *scionPacketProcessor) validateIngressID() disposition {
 }
 
 func (p *scionPacketProcessor) validateSrcDstIA() disposition {
+	log.Debug("validate source SRC, DST:", p.scionLayer.SrcIA.String(), p.scionLayer.DstIA.String())
 	srcIsLocal := p.d.hasLocalIA(p.scionLayer.SrcIA)
 	dstIsLocal := p.d.hasLocalIA(p.scionLayer.DstIA)
 	if dstIsLocal {
@@ -1565,7 +1588,8 @@ func (p *scionPacketProcessor) verifyCurrentMAC() disposition {
 			"actual", p.hopField.Mac[:path.MacLen],
 			"cons_dir", p.infoField.ConsDir,
 			"if_id", p.ingressFromLink, "curr_inf", p.path.PathMeta.CurrINF,
-			"curr_hf", p.path.PathMeta.CurrHF, "seg_id", p.infoField.SegID)
+			"curr_hf", p.path.PathMeta.CurrHF, "seg_id", p.infoField.SegID,
+			"src_ia", p.scionLayer.SrcIA, "dst_ia", p.scionLayer.DstIA)
 		p.pkt.slowPathRequest = slowPathRequest{
 			spType:  slowPathType(slayers.SCMPTypeParameterProblem),
 			code:    slayers.SCMPCodeInvalidHopFieldMAC,
@@ -1932,7 +1956,9 @@ func (p *scionPacketProcessor) processOHP() disposition {
 
 	// OHP leaving our IA
 	if p.ingressFromLink == 0 {
-		if !p.d.localIA.Equal(s.SrcIA) {
+		log.Debug("Processing outgoing OHP packet", "src_ia", s.SrcIA, "dst_ia", s.DstIA,
+			"egress_if", ohp.FirstHop.ConsEgress, "src_isd", s.SrcIA.ISD())
+		if !p.d.hasLocalIA(s.SrcIA) {
 			// TODO parameter problem -> invalid path
 			return errorDiscard("error", errCannotRoute)
 		}
@@ -1941,10 +1967,12 @@ func (p *scionPacketProcessor) processOHP() disposition {
 			// TODO parameter problem invalid interface
 			return errorDiscard("error", errCannotRoute)
 		}
-		if !neighborIA.Equal(s.DstIA) {
-			return errorDiscard("error", errCannotRoute)
-		}
-		mac := path.MAC(p.mac, ohp.Info, ohp.FirstHop, p.macInputBuffer[:path.MACBufferSize])
+		// For outgoing OHP packets we sign with the MAC derived from the local
+		// membership ISD (source IA), not the destination.
+		macFactory := p.d.getMACFactory(p.scionLayer.SrcIA.ISD())
+		macFunc := macFactory()
+		mac := path.MAC(macFunc, ohp.Info, ohp.FirstHop,
+			p.macInputBuffer[:path.MACBufferSize])
 		if subtle.ConstantTimeCompare(ohp.FirstHop.Mac[:], mac[:]) == 0 {
 			// TODO parameter problem -> invalid MAC
 			return errorDiscard("error", errMacVerificationFailed)
@@ -1958,12 +1986,14 @@ func (p *scionPacketProcessor) processOHP() disposition {
 		return pForward
 	}
 
+	log.Debug("process ohp: SRC, DST:", s.SrcIA.String(), s.DstIA.String())
+
 	// OHP entering our IA
-	if !p.d.localIA.Equal(s.DstIA) {
-		return errorDiscard("error", errCannotRoute)
+	if !p.d.hasLocalIA(s.DstIA) {
+		return errorDiscard("error", errCannotRoute, s.DstIA)
 	}
 	neighborIA := p.d.neighborIAs[p.ingressFromLink]
-	if !neighborIA.Equal(s.SrcIA) {
+	if neighborIA.AS() != s.SrcIA.AS() {
 		return errorDiscard("error", errCannotRoute)
 	}
 
@@ -1974,7 +2004,9 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	// XXX(roosd): Here we leak the buffer into the SCION packet header.
 	// This is okay because we do not operate on the buffer or the packet
 	// for the rest of processing.
-	ohp.SecondHop.Mac = path.MAC(p.mac, ohp.Info, ohp.SecondHop,
+	macFactory := p.d.getMACFactory(p.scionLayer.DstIA.ISD())
+	mac := macFactory()
+	ohp.SecondHop.Mac = path.MAC(mac, ohp.Info, ohp.SecondHop,
 		p.macInputBuffer[:path.MACBufferSize])
 
 	if err := updateSCIONLayer(p.pkt.RawPacket, s); err != nil {
@@ -2364,7 +2396,7 @@ func (p *slowPathPacketProcessor) prepareSCMP(
 	scionL.PathType = revPath.Type()
 	scionL.Path = revPath
 	scionL.DstIA = p.scionLayer.SrcIA
-	scionL.SrcIA = p.replyIA()
+	scionL.SrcIA = p.scionLayer.DstIA
 	scionL.DstAddrType = p.scionLayer.SrcAddrType
 	scionL.RawDstAddr = p.scionLayer.RawSrcAddr
 	scionL.NextHdr = slayers.L4SCMP

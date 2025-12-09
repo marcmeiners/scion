@@ -386,9 +386,15 @@ func realMain(ctx context.Context) error {
 	if err != nil {
 		return serrors.Wrap("initializing shared QUIC stack", err, "ia", topo.IA())
 	}
+	privateStacks := make(map[*infraenv.QUICStack]struct{})
 
 	for i := range membershipEnvs {
 		env := &membershipEnvs[i]
+		memberCfg := nc
+		memberCfg.IA = env.IA
+		memberTopo := adaptTopology(topo)
+		memberTopo.LocalIA = env.IA
+		memberCfg.Topology = memberTopo
 
 		// derive per-membership MAC generator for one-hop paths
 		var membershipMACGen func() hash.Hash
@@ -406,11 +412,20 @@ func realMain(ctx context.Context) error {
 		}
 
 		rewriter := &onehop.AddressRewriter{
-			Rewriter: sharedCfg.AddressRewriter(),
+			Rewriter: memberCfg.AddressRewriter(),
 			MAC:      membershipMACGen(),
 		}
 
-		grpcDialer := &libgrpc.QUICDialer{Rewriter: rewriter, Dialer: newSNIDialer(sharedStack, env.IA)}
+		stack := sharedStack
+		if env.IA != topo.IA() {
+			stack, err = memberCfg.QUICClientStack(ctx)
+			if err != nil {
+				return serrors.Wrap("initializing membership QUIC stack", err, "ia", env.IA)
+			}
+			privateStacks[stack] = struct{}{}
+		}
+
+		grpcDialer := &libgrpc.QUICDialer{Rewriter: rewriter, Dialer: newSNIDialer(stack, env.IA)}
 
 		connectTLS := func() *tls.Config {
 			if sharedStack.InsecureDialer.TLSConfig == nil {
@@ -421,7 +436,7 @@ func realMain(ctx context.Context) error {
 			return cfg
 		}()
 
-		connectDialer := (&squic.EarlyDialerFactory{Transport: sharedStack.InsecureDialer.Transport, TLSConfig: connectTLS, Rewriter: rewriter}).NewDialer
+		connectDialer := (&squic.EarlyDialerFactory{Transport: stack.InsecureDialer.Transport, TLSConfig: connectTLS, Rewriter: rewriter}).NewDialer
 
 		registrar := &happy.Registrar{
 			Connect: beaconingconnect.Registrar{Dialer: connectDialer},
@@ -430,8 +445,8 @@ func realMain(ctx context.Context) error {
 
 		membershipNetworks[env.IA] = &membershipNetwork{
 			Env:           env,
-			Config:        sharedCfg,
-			Stack:         sharedStack,
+			Config:        memberCfg,
+			Stack:         stack,
 			Rewriter:      rewriter,
 			GRPCDialer:    grpcDialer,
 			ConnectDialer: connectDialer,
@@ -1060,6 +1075,22 @@ func realMain(ctx context.Context) error {
 		}
 		return nil
 	})
+	for stack := range privateStacks {
+		st := stack
+		cleanup.Add(func() error {
+			if st.Listener != nil {
+				if err := st.Listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					return err
+				}
+			}
+			if st.Dialer != nil && st.Dialer.Transport != nil {
+				if err := st.Dialer.Transport.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 
 	g.Go(func() error {
 		defer log.HandlePanic()
@@ -1856,9 +1887,26 @@ func adaptInterfaceMap(in map[iface.ID]topology.IFInfo) map[uint16]ifstate.Inter
 			RemoteID:     uint16(info.RemoteIfID),
 			MTU:          uint16(info.MTU),
 			PrivateISDs:  append([]addr.ISD(nil), info.PrivateISDs...),
+			PrivateIAs:   buildPrivateIAs(info),
 		}
 	}
 	return converted
+}
+
+func buildPrivateIAs(info topology.IFInfo) map[addr.ISD]addr.IA {
+	if len(info.PrivateISDs) == 0 {
+		return nil
+	}
+	privateIAs := make(map[addr.ISD]addr.IA, len(info.PrivateISDs))
+	for _, isd := range info.PrivateISDs {
+		ia, err := addr.IAFrom(isd, info.IA.AS())
+		if err != nil {
+			log.Debug("Skipping invalid private IA for interface", "isd", isd, "as", info.IA.AS(), "err", err)
+			continue
+		}
+		privateIAs[isd] = ia
+	}
+	return privateIAs
 }
 
 type cachedCAHealth struct {

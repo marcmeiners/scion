@@ -141,6 +141,57 @@ func (nc *NetworkConfig) QUICStack(ctx context.Context) (*QUICStack, error) {
 	}, nil
 }
 
+// QUICClientStack initializes a QUIC stack that only contains client dialers.
+// It is useful for additional memberships that reuse the same underlay IP/port
+// but need to present a different local IA.
+func (nc *NetworkConfig) QUICClientStack(ctx context.Context) (*QUICStack, error) {
+	clientNet := &snet.SCIONNetwork{
+		Topology: nc.Topology,
+		// Discard all SCMP propagation, to avoid read errors on the QUIC
+		// client.
+		SCMPHandler: snet.SCMPPropagationStopper{
+			Handler: nc.SCMPHandler,
+			Log:     log.Debug,
+		},
+		Metrics:           nc.SCIONNetworkMetrics,
+		PacketConnMetrics: nc.SCIONPacketConnMetrics,
+	}
+	clientAddr := &net.UDPAddr{
+		IP:   nc.Public.IP,
+		Zone: nc.Public.Zone,
+	}
+	client, err := clientNet.Listen(ctx, "udp", clientAddr)
+	if err != nil {
+		return nil, serrors.Wrap("creating client connection", err)
+	}
+
+	insecureClientTLSConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"SCION"},
+	}
+	clientTLSConfig := &tls.Config{
+		InsecureSkipVerify:    true, // ... but VerifyServerCertificate and VerifyConnection
+		GetClientCertificate:  nc.QUIC.GetClientCertificate,
+		VerifyPeerCertificate: nc.QUIC.TLSVerifier.VerifyServerCertificate,
+		VerifyConnection:      nc.QUIC.TLSVerifier.VerifyConnection,
+		NextProtos:            []string{"SCION"},
+	}
+	clientTransport := &quic.Transport{
+		Conn: client,
+	}
+
+	return &QUICStack{
+		InsecureDialer: &squic.ConnDialer{
+			Transport: clientTransport,
+			TLSConfig: insecureClientTLSConfig,
+		},
+		Dialer: &squic.ConnDialer{
+			Transport: clientTransport,
+			TLSConfig: clientTLSConfig,
+		},
+	}, nil
+}
+
 // GenerateTLSConfig generates a self-signed certificate.
 func GenerateTLSConfig() (*tls.Config, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

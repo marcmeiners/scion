@@ -113,9 +113,20 @@ func (r *Resolver) LookupSVC(ctx context.Context, p snet.Path, svc addr.SVC) (*R
 			},
 		},
 	}
+	log.Debug("SVC resolve send",
+		"local_ia", r.LocalIA,
+		"local_ip", r.LocalIP,
+		"dst_ia", p.Destination(),
+		"svc", svc,
+		"next_hop", p.UnderlayNextHop(),
+		"path_type", common.TypeOf(p.Dataplane()))
 	reply, err := r.getRoundTripper().RoundTrip(ctx, conn, requestPacket, p.UnderlayNextHop())
 	if err != nil {
 		ext.Error.Set(span, true)
+		log.Debug("SVC resolve failed", "err", err,
+			"local_ia", r.LocalIA,
+			"dst_ia", p.Destination(),
+			"svc", svc)
 		return nil, err
 	}
 	return reply, nil

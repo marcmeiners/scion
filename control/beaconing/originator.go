@@ -114,6 +114,7 @@ func (o *Originator) originateBeacons(ctx context.Context) {
 			timestamp:  o.Tick.Now(),
 			summary:    s,
 			peers:      peers,
+			IA:         o.IA,
 		}
 		go func() {
 			defer log.HandlePanic()
@@ -160,12 +161,17 @@ type beaconOriginator struct {
 	timestamp time.Time
 	summary   *summary
 	peers     []uint16
+	IA        addr.IA
 }
 
 // originateBeacon originates a beacon on the given ifID.
 func (o *beaconOriginator) originateBeacon(ctx context.Context) error {
 	labels := originatorLabels{intf: o.intf}
 	topoInfo := o.intf.TopoInfo()
+	dstIA := topoInfo.IA
+	if alt, ok := topoInfo.PrivateIAs[o.IA.ISD()]; ok {
+		dstIA = alt
+	}
 	beacon, err := o.createBeacon(ctx)
 	if err != nil {
 		o.incrementMetrics(labels.WithResult("err_create"))
@@ -178,7 +184,7 @@ func (o *beaconOriginator) originateBeacon(ctx context.Context) error {
 
 	sender, err := o.SenderFactory.NewSender(
 		senderCtx,
-		topoInfo.IA,
+		dstIA,
 		o.intf.TopoInfo().ID,
 		net.UDPAddrFromAddrPort(topoInfo.InternalAddr),
 	)

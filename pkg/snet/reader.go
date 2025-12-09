@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/private/common"
 	"github.com/scionproto/scion/pkg/private/serrors"
 )
@@ -92,18 +93,27 @@ func (c *scionConnReader) read(b []byte) (int, *UDPAddr, error) {
 	// for Conn.
 	// If this were ever to change, we would always fall into the following if statement, then
 	// we would like to replace this logic (e.g., using IP_PKTINFO, with its caveats).
-    pktAddrPort := netip.AddrPortFrom(pkt.Destination.Host.IP(), udp.DstPort)
-    // Accept packets if the underlay host:port matches and the AS is the same
-    // as the local listener, even if the ISD differs (e.g., private membership
-    // addressing that reuses the same UDP endpoint).
-    if c.local.Host.AddrPort() != pktAddrPort || c.local.IA.AS() != pkt.Destination.IA.AS() {
-        return 0, nil, serrors.New("packet is destined to a different host",
-            "local_isd_as", c.local.IA,
-            "local_host", c.local.Host,
-            "pkt_destination_isd_as", pkt.Destination.IA,
-            "pkt_destination_host", pktAddrPort,
-        )
-    }
+	// For IP destinations, ensure the underlay host:port matches and the AS is the same
+	// as the local listener. For SVC destinations, skip the host check (SVC resolution
+	// replies/requests use SVC hosts).
+	if pkt.Destination.Host.Type() == addr.HostTypeIP {
+		pktAddrPort := netip.AddrPortFrom(pkt.Destination.Host.IP(), udp.DstPort)
+		if c.local.Host.AddrPort() != pktAddrPort || c.local.IA.AS() != pkt.Destination.IA.AS() {
+			return 0, nil, serrors.New("packet is destined to a different host",
+				"local_isd_as", c.local.IA,
+				"local_host", c.local.Host,
+				"pkt_destination_isd_as", pkt.Destination.IA,
+				"pkt_destination_host", pktAddrPort,
+			)
+		}
+	} else {
+		if c.local.IA.AS() != pkt.Destination.IA.AS() {
+			return 0, nil, serrors.New("packet is destined to a different AS",
+				"local_isd_as", c.local.IA,
+				"pkt_destination_isd_as", pkt.Destination.IA,
+			)
+		}
+	}
 
 	// Extract remote address.
 	// Copy the address data to prevent races. See

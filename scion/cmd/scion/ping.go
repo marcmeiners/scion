@@ -71,12 +71,12 @@ type PingUpdate struct {
 
 func newPing(pather CommandPather) *cobra.Command {
 	var envFlags flag.SCIONEnvironment
-    var flags struct {
-        count       uint16
-        features    []string
-        interactive bool
-        interval    time.Duration
-        logLevel    string
+	var flags struct {
+		count       uint16
+		features    []string
+		interactive bool
+		interval    time.Duration
+		logLevel    string
 		maxMTU      bool
 		noColor     bool
 		refresh     bool
@@ -86,11 +86,11 @@ func newPing(pather CommandPather) *cobra.Command {
 		pktSize     uint
 		timeout     time.Duration
 		tracer      string
-        epic        bool
-        format      string
-        isd         uint16
-        privateOnly bool
-    }
+		epic        bool
+		format      string
+		isd         uint16
+		privateOnly bool
+	}
 
 	cmd := &cobra.Command{
 		Use:   "ping [flags] <remote>",
@@ -174,19 +174,19 @@ On other errors, ping will exit with code 2.
 				}))
 			}
 
-            if flags.isd != 0 {
-                // Build the local membership IA from the requested private ISD
-                // and the local AS. If this IA is not configured on the daemon,
-                // the daemon will fall back to default behavior.
-                srcIA, err := addr.IAFrom(addr.ISD(flags.isd), topo.LocalIA.AS())
-                if err == nil {
-                    opts = append(opts, path.WithSourceIA(srcIA))
-                }
-            }
-            if flags.privateOnly {
-                opts = append(opts, path.WithPrivateOnly(true))
-            }
-            path, err := path.Choose(traceCtx, sd, remote.IA, opts...)
+			if flags.isd != 0 {
+				// Build the local membership IA from the requested private ISD
+				// and the local AS. If this IA is not configured on the daemon,
+				// the daemon will fall back to default behavior.
+				srcIA, err := addr.IAFrom(addr.ISD(flags.isd), topo.LocalIA.AS())
+				if err == nil {
+					opts = append(opts, path.WithSourceIA(srcIA))
+				}
+			}
+			if flags.privateOnly {
+				opts = append(opts, path.WithPrivateOnly(true))
+			}
+			path, err := path.Choose(traceCtx, sd, remote.IA, opts...)
 			if err != nil {
 				return err
 			}
@@ -279,6 +279,10 @@ On other errors, ping will exit with code 2.
 				PayloadSize: pldSize,
 			}
 
+			if src := path.Source(); src != 0 {
+				local.IA = src
+			}
+
 			stats, err := ping.Run(ctx, ping.Config{
 				Topology:    topo,
 				Attempts:    count,
@@ -352,9 +356,9 @@ On other errors, ping will exit with code 2.
 		},
 	}
 
-    envFlags.Register(cmd.Flags())
-    cmd.Flags().Uint16Var(&flags.isd, "isd", 0, "Force using the specified ISD for path lookup (optional). If this matches the local public ISD, public paths are used; otherwise, private paths for that ISD are used.")
-    cmd.Flags().BoolVar(&flags.privateOnly, "private-only", false, "Use only private paths; error if none available")
+	envFlags.Register(cmd.Flags())
+	cmd.Flags().Uint16Var(&flags.isd, "isd", 0, "Force using the specified ISD for path lookup (optional). If this matches the local public ISD, public paths are used; otherwise, private paths for that ISD are used.")
+	cmd.Flags().BoolVar(&flags.privateOnly, "private-only", false, "Use only private paths; error if none available")
 	cmd.Flags().BoolVarP(&flags.interactive, "interactive", "i", false, "interactive mode")
 	cmd.Flags().BoolVar(&flags.noColor, "no-color", false, "disable colored output")
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", time.Second, "timeout per packet")

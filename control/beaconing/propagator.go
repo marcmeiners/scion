@@ -123,6 +123,7 @@ func (p *Propagator) run(ctx context.Context) error {
 				intf:          intf,
 				beacons:       beacons,
 				peers:         peers,
+				IA:            p.IA,
 			}
 			if err := p.Propagate(ctx); err != nil {
 				logger.Info("Error propagating beacons on interface",
@@ -239,6 +240,7 @@ type propagator struct {
 	beacons []beacon.Beacon
 	peers   []uint16
 	intf    *ifstate.Interface
+	IA      addr.IA
 }
 
 func (p *propagator) Propagate(ctx context.Context) error {
@@ -246,6 +248,7 @@ func (p *propagator) Propagate(ctx context.Context) error {
 		logger   = withSilent(ctx, p.silent)
 		topoInfo = p.intf.TopoInfo()
 		egress   = topoInfo.ID
+		dstIA    = topoInfo.IA
 
 		mtx        sync.Mutex
 		success    bool
@@ -259,9 +262,12 @@ func (p *propagator) Propagate(ctx context.Context) error {
 	senderStart := time.Now()
 	senderCtx, cancel := context.WithTimeout(ctx, defaultNewSenderTimeout)
 	defer cancel()
+	if alt, ok := topoInfo.PrivateIAs[p.IA.ISD()]; ok {
+		dstIA = alt
+	}
 	sender, err := p.senderFactory.NewSender(
 		senderCtx,
-		topoInfo.IA,
+		dstIA,
 		egress,
 		net.UDPAddrFromAddrPort(topoInfo.InternalAddr),
 	)

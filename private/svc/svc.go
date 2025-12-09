@@ -56,6 +56,10 @@ func (c *ResolverPacketConn) ReadFrom(pkt *snet.Packet, ov *net.UDPAddr) error {
 		if err := c.PacketConn.ReadFrom(pkt, ov); err != nil {
 			return err
 		}
+		log.Debug("SVC packet received",
+			"dst_ia", pkt.Destination.IA,
+			"dst_host", pkt.Destination.Host,
+			"src_ia", pkt.Source.IA)
 		// XXX(scrye): destination address is guaranteed to not be nil
 		if pkt.Destination.Host.Type() != addr.HostTypeSVC {
 			// Normal packet, return to caller because data is already parsed and ready

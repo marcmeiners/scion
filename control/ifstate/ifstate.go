@@ -38,6 +38,8 @@ type InterfaceInfo struct {
 	MTU uint16
 	// PrivateISDs indicates private ISDs shared with the remote endpoint. I.e. the list of ISDs both the local AS and the remote one participate in.
 	PrivateISDs []addr.ISD
+	// PrivateIAs maps shared private ISDs to the remote IA (same AS number, different ISD).
+	PrivateIAs map[addr.ISD]addr.IA
 }
 
 const (
