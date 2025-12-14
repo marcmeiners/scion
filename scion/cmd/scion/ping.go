@@ -69,6 +69,33 @@ type PingUpdate struct {
 	State    string         `json:"state" yaml:"state"`
 }
 
+// pathEndpoints returns src/dst IAs for a path, falling back to first/last
+// interfaces and the provided defaults if the path does not carry explicit
+// endpoints. This keeps SCMP echo headers aligned with the chosen path,
+// including private membership IAs.
+func pathEndpoints(p snet.Path, defaultSrc, defaultDst addr.IA) (addr.IA, addr.IA) {
+	src := p.Source()
+	dst := p.Destination()
+	if (src == 0 || dst == 0) && p.Metadata() != nil {
+		ifaces := p.Metadata().Interfaces
+		if len(ifaces) > 0 {
+			if src == 0 {
+				src = ifaces[0].IA
+			}
+			if dst == 0 {
+				dst = ifaces[len(ifaces)-1].IA
+			}
+		}
+	}
+	if src == 0 {
+		src = defaultSrc
+	}
+	if dst == 0 {
+		dst = defaultDst
+	}
+	return src, dst
+}
+
 func newPing(pather CommandPather) *cobra.Command {
 	var envFlags flag.SCIONEnvironment
 	var flags struct {
@@ -279,9 +306,9 @@ On other errors, ping will exit with code 2.
 				PayloadSize: pldSize,
 			}
 
-			if src := path.Source(); src != 0 {
-				local.IA = src
-			}
+			src, dst := pathEndpoints(path, local.IA, remote.IA)
+			local.IA = src
+			remote.IA = dst
 
 			stats, err := ping.Run(ctx, ping.Config{
 				Topology:    topo,

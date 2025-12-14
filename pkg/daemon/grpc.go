@@ -283,7 +283,7 @@ func convertPath(p *sdpb.Path, dst addr.IA) (path.Path, error) {
 
 	res := path.Path{
 		Src: interfaces[0].IA,
-		Dst: dst,
+		Dst: interfaces[len(interfaces)-1].IA,
 		DataplanePath: path.SCION{
 			Raw: p.Raw,
 		},

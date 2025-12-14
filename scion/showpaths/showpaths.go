@@ -312,6 +312,32 @@ func sanitizeString(str string) string {
 	}, str)
 }
 
+// pathEndpoints extracts src/dst IAs from a path, falling back to the first/last
+// interface IAs and provided defaults when missing. This keeps probing aligned
+// with paths across public/private memberships.
+func pathEndpoints(p snet.Path, defaultSrc, defaultDst addr.IA) (addr.IA, addr.IA) {
+	src := p.Source()
+	dst := p.Destination()
+	if (src == 0 || dst == 0) && p.Metadata() != nil {
+		ifaces := p.Metadata().Interfaces
+		if len(ifaces) > 0 {
+			if src == 0 {
+				src = ifaces[0].IA
+			}
+			if dst == 0 {
+				dst = ifaces[len(ifaces)-1].IA
+			}
+		}
+	}
+	if src == 0 {
+		src = defaultSrc
+	}
+	if dst == 0 {
+		dst = defaultDst
+	}
+	return src, dst
+}
+
 // IsLocal returns true iff Source and Destination AS are identical
 func (r Result) IsLocal() bool {
 	return r.LocalIA == r.Destination
@@ -392,15 +418,22 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 
 	var statuses map[string]pathprobe.Status
 	if !cfg.NoProbe {
-		p := pathprobe.FilterEmptyPaths(paths)
-		statuses, err = pathprobe.Prober{
-			DstIA:    dst,
-			LocalIA:  localIA,
-			LocalIP:  cfg.Local,
-			Topology: topo,
-		}.GetStatuses(ctx, p, pathprobe.WithEPIC(cfg.Epic))
-		if err != nil {
-			return nil, serrors.Wrap("getting statuses", err)
+		statuses = make(map[string]pathprobe.Status)
+		//adjust path endpoints, paths could be private
+		for _, p := range pathprobe.FilterEmptyPaths(paths) {
+			src, dest := pathEndpoints(p, localIA, dst)
+			ps, err := pathprobe.Prober{
+				DstIA:    dest,
+				LocalIA:  src,
+				LocalIP:  cfg.Local,
+				Topology: topo,
+			}.GetStatuses(ctx, []snet.Path{p}, pathprobe.WithEPIC(cfg.Epic))
+			if err != nil {
+				return nil, serrors.Wrap("getting statuses", err, "local_ia", src, "dst_ia", dest)
+			}
+			for k, v := range ps {
+				statuses[k] = v
+			}
 		}
 	}
 	path.Sort(paths)
