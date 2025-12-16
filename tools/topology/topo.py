@@ -218,6 +218,9 @@ class TopoGenerator(object):
             a = LinkEP(attrs.pop("a"))
             b = LinkEP(attrs.pop("b"))
             linkto = LinkType[attrs.pop("linkAtoB").upper()]
+            if attrs.get("privateonly") and linkto == LinkType.CORE:
+                logging.critical("privateonly is not allowed on CORE links (%s <-> %s)", a, b)
+                sys.exit(1)
             linkto_a = linkto_b = linkto
             if linkto == LinkType.CHILD:
                 linkto_a = LinkType.PARENT
@@ -374,6 +377,15 @@ class TopoGenerator(object):
         }
         if link_to == 'peer':
             intf['remote_interface_id'] = r_ifid
+        if attrs.get('privateonly'):
+            intf['private_only'] = True
+        allowed_priv = attrs.get('allowedprivate')
+        if allowed_priv:
+            try:
+                intf['allowed_private'] = [int(v) for v in allowed_priv]
+            except (TypeError, ValueError):
+                logging.critical("Invalid allowedprivate values: %s", allowed_priv)
+                sys.exit(1)
         return intf
 
     def _private_isds_for(self, topo_id):

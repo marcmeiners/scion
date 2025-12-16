@@ -1764,6 +1764,12 @@ func newPropagationFilter(isCore, isPrivate bool, privateISD addr.ISD) func(*ifs
 		if isPrivate && !interfaceSupportsPrivateISD(topoInfo, privateISD) {
 			return false
 		}
+		if topoInfo.PrivateOnly && !isPrivate {
+			return false
+		}
+		if topoInfo.PrivateOnly && !interfaceAllowedForPrivateISD(topoInfo, privateISD) {
+			return false
+		}
 		if isCore {
 			return topoInfo.LinkType == topology.Core
 		}
@@ -1777,6 +1783,12 @@ func newOriginationFilter(isPrivate bool, privateISD addr.ISD) func(*ifstate.Int
 		if isPrivate && !interfaceSupportsPrivateISD(topoInfo, privateISD) {
 			return false
 		}
+		if topoInfo.PrivateOnly && !isPrivate {
+			return false
+		}
+		if topoInfo.PrivateOnly && !interfaceAllowedForPrivateISD(topoInfo, privateISD) {
+			return false
+		}
 		return topoInfo.LinkType == topology.Core || topoInfo.LinkType == topology.Child
 	}
 }
@@ -1787,6 +1799,22 @@ func interfaceSupportsPrivateISD(info ifstate.InterfaceInfo, isd addr.ISD) bool 
 	}
 	for _, candidate := range info.PrivateISDs {
 		if candidate == isd {
+			return true
+		}
+	}
+	return false
+}
+
+func interfaceAllowedForPrivateISD(info ifstate.InterfaceInfo, isd addr.ISD) bool {
+	if isd == 0 {
+		return false
+	}
+	if len(info.AllowedPrivate) == 0 {
+		// all memberships are allowed, nothing specified
+		return true
+	}
+	for _, a := range info.AllowedPrivate {
+		if a == isd {
 			return true
 		}
 	}
@@ -1888,6 +1916,9 @@ func adaptInterfaceMap(in map[iface.ID]topology.IFInfo) map[uint16]ifstate.Inter
 			MTU:          uint16(info.MTU),
 			PrivateISDs:  append([]addr.ISD(nil), info.PrivateISDs...),
 			PrivateIAs:   buildPrivateIAs(info),
+			PrivateOnly:  info.PrivateOnly,
+			AllowedPrivate: append([]addr.ISD(nil),
+				info.AllowedPriv...),
 		}
 	}
 	return converted

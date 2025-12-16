@@ -165,6 +165,10 @@ type BRInterface struct {
 	RemoteIfID iface.ID `json:"remote_interface_id,omitempty"`
 	// PrivateISDs lists the private ISDs shared with the remote interface.
 	PrivateISDs []uint16 `json:"private_isds,omitempty"`
+	// PrivateOnly restricts this link to private memberships only; public traffic is not allowed.
+	PrivateOnly bool `json:"private_only,omitempty"`
+	// AllowedPrivate restricts which private ISDs may traverse this link. Empty means any private.
+	AllowedPrivate []uint16 `json:"allowed_private,omitempty"`
 }
 
 // Underlay is the underlay information for a BR interface.

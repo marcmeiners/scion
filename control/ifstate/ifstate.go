@@ -40,6 +40,10 @@ type InterfaceInfo struct {
 	PrivateISDs []addr.ISD
 	// PrivateIAs maps shared private ISDs to the remote IA (same AS number, different ISD).
 	PrivateIAs map[addr.ISD]addr.IA
+	// PrivateOnly restricts traffic on this interface to private memberships.
+	PrivateOnly bool
+	// AllowedPrivate restricts which private ISDs may traverse; empty means any private.
+	AllowedPrivate []addr.ISD
 }
 
 const (

@@ -51,13 +51,15 @@ type BFD topology.BFD
 // LinkInfo contains the information about a link between an internal and
 // external router.
 type LinkInfo struct {
-	Provider string
-	Local    LinkEnd
-	Remote   LinkEnd
-	Instance string
-	LinkTo   topology.LinkType
-	BFD      BFD
-	MTU      int
+	Provider    string
+	Local       LinkEnd
+	Remote      LinkEnd
+	Instance    string
+	LinkTo      topology.LinkType
+	BFD         BFD
+	MTU         int
+	PrivateOnly bool
+	AllowedPriv []addr.ISD
 }
 
 // LinkEnd represents one end of a link.
@@ -224,10 +226,12 @@ func confExternalInterfaces(dp Dataplane, cfg *Config) error {
 				Addr: iface.Remote,
 				IfID: iface.RemoteIfID,
 			},
-			Instance: iface.BRName,
-			BFD:      BFD(iface.BFD),
-			LinkTo:   iface.LinkType,
-			MTU:      iface.MTU,
+			Instance:    iface.BRName,
+			BFD:         BFD(iface.BFD),
+			LinkTo:      iface.LinkType,
+			MTU:         iface.MTU,
+			PrivateOnly: iface.PrivateOnly,
+			AllowedPriv: append([]addr.ISD(nil), iface.AllowedPriv...),
 		}
 
 		// TODO(multi_underlay): Host addresses are currently constructed from a hosts's underlay

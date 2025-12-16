@@ -83,6 +83,8 @@ type internalValidator interface {
 	General(topo *RWTopology) error
 	// Immutable checks that the immutable parts of the topology do not change.
 	Immutable(topo, oldTopo *RWTopology) error
+	// LinkAttributes checks per-link attributes for validity
+	LinkAttributes(topo *RWTopology) error
 }
 
 // validatorWrap wraps the internalValidator and implements validator.
@@ -96,6 +98,9 @@ func (v *validatorWrap) Validate(new, old *RWTopology) error {
 		return err
 	}
 	if err := v.Immutable(new, old); err != nil {
+		return err
+	}
+	if err := v.LinkAttributes(new); err != nil {
 		return err
 	}
 	return nil
@@ -128,6 +133,18 @@ func (v *generalValidator) Immutable(new, old *RWTopology) error {
 	if new.MTU != old.MTU {
 		return serrors.New("MTU is immutable",
 			"expected", old.MTU, "actual", new.MTU)
+	}
+	return nil
+}
+
+func (v *generalValidator) LinkAttributes(topo *RWTopology) error {
+	// Ensure compatibility of private-only links
+	for _, br := range topo.BR {
+		for _, ifinfo := range br.IFs {
+			if ifinfo.LinkType == LinkType(Core) && ifinfo.PrivateOnly {
+				return serrors.New("core links cannot be private-only", "ifid", ifinfo.ID)
+			}
+		}
 	}
 	return nil
 }

@@ -227,6 +227,8 @@ type dataPlane struct {
 	numInterfaces       int
 	linkTypes           [math.MaxUint16 + 1]topology.LinkType
 	neighborIAs         [math.MaxUint16 + 1]addr.IA
+	privateOnly         [math.MaxUint16 + 1]bool
+	allowedPriv         map[uint16]map[addr.ISD]struct{}
 	localHost           addr.Host
 	macFactory          func() hash.Hash
 	macFactories        map[addr.ISD]func() hash.Hash
@@ -587,6 +589,17 @@ func (d *dataPlane) AddExternalInterface(
 	}
 	d.interfaces[ifID] = lk
 	d.numInterfaces++
+	d.privateOnly[ifID] = link.PrivateOnly
+	if len(link.AllowedPriv) > 0 {
+		if d.allowedPriv == nil {
+			d.allowedPriv = make(map[uint16]map[addr.ISD]struct{})
+		}
+		set := make(map[addr.ISD]struct{}, len(link.AllowedPriv))
+		for _, isd := range link.AllowedPriv {
+			set[isd] = struct{}{}
+		}
+		d.allowedPriv[ifID] = set
+	}
 	return nil
 }
 
@@ -607,6 +620,24 @@ func (d *dataPlane) AddNeighborIA(ifID uint16, remote addr.IA) error {
 	}
 	d.neighborIAs[ifID] = remote
 	return nil
+}
+
+// allowOnInterface returns true if the IA is allowed to traverse the given interface.
+// Private-only interfaces reject public traffic and can optionally restrict to a set of private ISDs.
+func (d *dataPlane) allowOnInterface(ifID uint16, ia addr.IA) bool {
+	if !d.privateOnly[ifID] {
+		return true
+	}
+	if ia.IsZero() {
+		return false
+	}
+	allowed := d.allowedPriv[ifID]
+	if len(allowed) == 0 {
+		// Private-only, but no explicit allowlist: accept any non-zero ISD (i.e., any private membership).
+		return true
+	}
+	_, ok := allowed[ia.ISD()]
+	return ok
 }
 
 // newExternalInterfaceBFD adds the inter AS connection BFD session.
@@ -732,6 +763,17 @@ func (d *dataPlane) AddNextHop(
 	}
 	d.interfaces[ifID] = lk
 	d.numInterfaces++
+	d.privateOnly[ifID] = link.PrivateOnly
+	if len(link.AllowedPriv) > 0 {
+		if d.allowedPriv == nil {
+			d.allowedPriv = make(map[uint16]map[addr.ISD]struct{})
+		}
+		set := make(map[addr.ISD]struct{}, len(link.AllowedPriv))
+		for _, isd := range link.AllowedPriv {
+			set[isd] = struct{}{}
+		}
+		d.allowedPriv[ifID] = set
+	}
 	return nil
 }
 
@@ -1415,6 +1457,9 @@ func (p *scionPacketProcessor) validateSrcDstIA() disposition {
 		}
 	} else {
 		// Inbound
+		if p.ingressFromLink != 0 && !p.d.allowOnInterface(p.ingressFromLink, p.scionLayer.SrcIA) {
+			return errorDiscard("error", errCannotRoute)
+		}
 		if srcIsLocal {
 			return p.respInvalidSrcIA()
 		}
@@ -1915,6 +1960,9 @@ func (p *scionPacketProcessor) process() disposition {
 	if disp := p.validateEgressUp(); disp != pForward {
 		return disp
 	}
+	if !p.d.allowOnInterface(egressID, p.scionLayer.SrcIA) {
+		return errorDiscard("error", errCannotRoute)
+	}
 	if p.d.interfaces[egressID].Scope() == External {
 		// Not ASTransit in
 		if disp := p.processEgress(); disp != pForward {
@@ -1958,6 +2006,9 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	if p.ingressFromLink == 0 {
 		log.Debug("Processing outgoing OHP packet", "src_ia", s.SrcIA, "dst_ia", s.DstIA,
 			"egress_if", ohp.FirstHop.ConsEgress, "src_isd", s.SrcIA.ISD())
+		if !p.d.allowOnInterface(ohp.FirstHop.ConsEgress, s.SrcIA) {
+			return errorDiscard("error", errCannotRoute)
+		}
 		if !p.d.hasLocalIA(s.SrcIA) {
 			// TODO parameter problem -> invalid path
 			return errorDiscard("error", errCannotRoute)
@@ -1991,6 +2042,9 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	// OHP entering our IA
 	if !p.d.hasLocalIA(s.DstIA) {
 		return errorDiscard("error", errCannotRoute, s.DstIA)
+	}
+	if !p.d.allowOnInterface(p.ingressFromLink, s.SrcIA) {
+		return errorDiscard("error", errCannotRoute)
 	}
 	neighborIA := p.d.neighborIAs[p.ingressFromLink]
 	if neighborIA.AS() != s.SrcIA.AS() {

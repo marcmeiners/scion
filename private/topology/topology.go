@@ -140,6 +140,8 @@ type (
 		MTU          int            // of the link (configured - could be wrong and needs update)
 		BFD          BFD            // (configuration of)
 		PrivateISDs  []addr.ISD     // Private ISDs shared on this interface
+		PrivateOnly  bool           // If true, only private traffic is allowed
+		AllowedPriv  []addr.ISD     // Optional allowlist of private ISDs permitted
 	}
 
 	// IDAddrMap maps process IDs to their topology addresses.
@@ -337,6 +339,7 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 				BRName:       name,
 				InternalAddr: intAddr,
 				MTU:          rawIntf.MTU,
+				PrivateOnly:  rawIntf.PrivateOnly,
 			}
 			if ifinfo.IA, err = addr.ParseIA(rawIntf.IA); err != nil {
 				return err
@@ -375,6 +378,12 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 				ifinfo.PrivateISDs = make([]addr.ISD, 0, len(rawIntf.PrivateISDs))
 				for _, v := range rawIntf.PrivateISDs {
 					ifinfo.PrivateISDs = append(ifinfo.PrivateISDs, addr.ISD(v))
+				}
+			}
+			if len(rawIntf.AllowedPrivate) > 0 {
+				ifinfo.AllowedPriv = make([]addr.ISD, 0, len(rawIntf.AllowedPrivate))
+				for _, v := range rawIntf.AllowedPrivate {
+					ifinfo.AllowedPriv = append(ifinfo.AllowedPriv, addr.ISD(v))
 				}
 			}
 			brInfo.IFs[ifID] = &ifinfo
