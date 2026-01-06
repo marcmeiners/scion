@@ -66,6 +66,7 @@ type (
 		IA                  addr.IA
 		IsCore              bool
 		MTU                 int
+		PrivateOnlyAS       bool
 		DispatchedPortStart uint16
 		DispatchedPortEnd   uint16
 		PrivateISDs         []PrivateISDMembership
@@ -231,6 +232,7 @@ func (t *RWTopology) populateMeta(raw *jsontopo.Topology) error {
 		return serrors.New("ISD-AS contains wildcard", "isd_as", t.IA)
 	}
 	t.MTU = raw.MTU
+	t.PrivateOnlyAS = raw.PrivateOnlyAS
 
 	t.DispatchedPortStart, t.DispatchedPortEnd, err = validatePortRange(raw.EndhostPortRange)
 	if err != nil {

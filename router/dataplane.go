@@ -1457,7 +1457,7 @@ func (p *scionPacketProcessor) validateSrcDstIA() disposition {
 		}
 	} else {
 		// Inbound
-		if p.ingressFromLink != 0 && !p.d.allowOnInterface(p.ingressFromLink, p.scionLayer.SrcIA) {
+		if p.ingressFromLink != 0 && !p.d.allowOnInterface(p.ingressFromLink, p.scionLayer.DstIA) {
 			return errorDiscard("error", errCannotRoute)
 		}
 		if srcIsLocal {
@@ -1960,7 +1960,7 @@ func (p *scionPacketProcessor) process() disposition {
 	if disp := p.validateEgressUp(); disp != pForward {
 		return disp
 	}
-	if !p.d.allowOnInterface(egressID, p.scionLayer.SrcIA) {
+	if !p.d.allowOnInterface(egressID, p.scionLayer.DstIA) {
 		return errorDiscard("error", errCannotRoute)
 	}
 	if p.d.interfaces[egressID].Scope() == External {
@@ -2006,7 +2006,7 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	if p.ingressFromLink == 0 {
 		log.Debug("Processing outgoing OHP packet", "src_ia", s.SrcIA, "dst_ia", s.DstIA,
 			"egress_if", ohp.FirstHop.ConsEgress, "src_isd", s.SrcIA.ISD())
-		if !p.d.allowOnInterface(ohp.FirstHop.ConsEgress, s.SrcIA) {
+		if !p.d.allowOnInterface(ohp.FirstHop.ConsEgress, s.DstIA) {
 			return errorDiscard("error", errCannotRoute)
 		}
 		if !p.d.hasLocalIA(s.SrcIA) {
@@ -2043,7 +2043,7 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	if !p.d.hasLocalIA(s.DstIA) {
 		return errorDiscard("error", errCannotRoute, s.DstIA)
 	}
-	if !p.d.allowOnInterface(p.ingressFromLink, s.SrcIA) {
+	if !p.d.allowOnInterface(p.ingressFromLink, s.DstIA) {
 		return errorDiscard("error", errCannotRoute)
 	}
 	neighborIA := p.d.neighborIAs[p.ingressFromLink]

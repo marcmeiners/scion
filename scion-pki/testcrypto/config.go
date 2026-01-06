@@ -32,6 +32,7 @@ type topo struct {
 		Core          bool                   `yaml:"core"`
 		Issuing       bool                   `yaml:"issuing"`
 		Voting        bool                   `yaml:"voting"`
+		PrivateOnlyAS bool                   `yaml:"private_only_as"`
 		PrivateISDs   []PrivateISDMembership `yaml:"private_isds"`
 	} `yaml:"ASes"`
 }

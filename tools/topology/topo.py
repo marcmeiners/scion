@@ -98,6 +98,7 @@ class TopoGenerator(object):
         self.as_list = defaultdict(list)
         self.links = defaultdict(list)
         self.ifid_map = {}
+        self.private_only_flags = {}
 
     def _reg_addr(self, topo_id: TopoID, elem_id, addr_type):
         subnet = self.args.subnet_gen[addr_type].register(str(topo_id))
@@ -243,7 +244,20 @@ class TopoGenerator(object):
         for attr in ['core']:
             if as_conf.get(attr, False):
                 attributes.append(attr)
+        private_only_as = bool(as_conf.get('private_only_as', False))
         private_isds = self._sanitize_private_isds(as_conf.get('private_isds'))
+        base_isd = int(topo_id.isd_str())
+        if private_only_as:
+            # Ensure the base ISD is present as a private membership entry.
+            if base_isd not in [int(entry['isd']) for entry in private_isds]:
+                private_isds.append({
+                    'isd': base_isd,
+                    'core': bool(as_conf.get('core', False)),
+                    'issuing': bool(as_conf.get('issuing', False)),
+                    'voting': bool(as_conf.get('voting', False)),
+                    'authoritative': bool(as_conf.get('authoritative', False)),
+                    'cert_issuer': as_conf.get('cert_issuer'),
+                })
         base_attrs = {
             'core': bool(as_conf.get('core', False)),
             'issuing': bool(as_conf.get('issuing', False)),
@@ -262,6 +276,7 @@ class TopoGenerator(object):
             as_conf['private_isds'] = private_isds
         else:
             as_conf.pop('private_isds', None)
+        self.private_only_flags[topo_id] = private_only_as
         self.topo_dicts[topo_id] = {
             'attributes': attributes,
             'isd_as': str(topo_id),
@@ -276,6 +291,7 @@ class TopoGenerator(object):
             # to self._gen_topo
             'test_dispatcher': as_conf.get('test_dispatcher', True),
             'dispatched_ports': as_conf.get('dispatched_ports', self.args.dispatched_ports),
+            'private_only_as': private_only_as,
         }
         local_ias = [str(topo_id)]
         if private_isds:
@@ -286,7 +302,9 @@ class TopoGenerator(object):
                     isd = int(entry['isd'])
                 except (TypeError, ValueError):
                     isd = entry['isd']
-                local_ias.append(f"{isd}-{as_part}")
+                ia = f"{isd}-{as_part}"
+                if ia not in local_ias:
+                    local_ias.append(ia)
         self.topo_dicts[topo_id]['local_ias'] = local_ias
         for i in SCION_SERVICE_NAMES:
             self.topo_dicts[topo_id][i] = {}
@@ -344,8 +362,8 @@ class TopoGenerator(object):
 
         intl_addr = self._reg_addr(local, local_br + "_internal", addr_type)
 
-        intf = self._gen_br_intf(remote, r_ifid, local_addr, remote_addr, attrs, remote_type)
         shared_private_isds = self._shared_private_isds(local, remote)
+        intf = self._gen_br_intf(local, remote, r_ifid, local_addr, remote_addr, attrs, remote_type, shared_private_isds)
         if shared_private_isds:
             intf['private_isds'] = shared_private_isds
 
@@ -364,20 +382,43 @@ class TopoGenerator(object):
             # There is already a BR entry, add interface
             self.topo_dicts[local]["border_routers"][local_br]['interfaces'][l_ifid] = intf
 
-    def _gen_br_intf(self, remote, r_ifid, local_addr, remote_addr, attrs, remote_type):
+    def _gen_br_intf(self, local, remote, r_ifid, local_addr, remote_addr, attrs, remote_type, shared_private_isds=None):
         link_to = remote_type.name.lower()
+        remote_ia = str(remote)
+        # If either endpoint is private-only, force the link IA to that AS's base private ISD.
+        local_is_private_only = self.private_only_flags.get(local, False)
+        remote_is_private_only = self.private_only_flags.get(remote, False)
+        if local_is_private_only and remote_is_private_only:
+            if local.isd == remote.isd:
+                remote_ia = f"{local.isd_str()}-{remote.as_str()}"
+            else:
+                # Pick a shared private ISD if any; otherwise abort.
+                if shared_private_isds:
+                    remote_ia = f"{shared_private_isds[0]}-{remote.as_str()}"
+                else:
+                    logging.critical(
+                        "Mismatched private-only ISDs on link between %s and %s", local, remote
+                    )
+                    sys.exit(1)
+        elif local_is_private_only and int(local.isd_str()) in self._private_isds_for(remote):
+            remote_ia = f"{local.isd_str()}-{remote.as_str()}"
+        elif remote_is_private_only and int(remote.isd_str()) in self._private_isds_for(local):
+            remote_ia = f"{remote.isd_str()}-{remote.as_str()}"
+        elif shared_private_isds and (attrs.get('privateonly')):
+            remote_ia = f"{shared_private_isds[0]}-{remote.as_str()}"
         intf = {
             'underlay': {
                 'local': join_host_port(local_addr.ip, SCION_ROUTER_PORT),
                 'remote': join_host_port(remote_addr.ip, SCION_ROUTER_PORT),
             },
-            'isd_as': str(remote),
+            'isd_as': remote_ia,
             'link_to': link_to,
             'mtu': attrs.get('mtu', self.args.default_mtu),
         }
         if link_to == 'peer':
             intf['remote_interface_id'] = r_ifid
-        if attrs.get('privateonly'):
+        # If the AS is private only, automatically make all neigboring link private only too
+        if attrs.get('privateonly') or self.private_only_flags.get(local, False):
             intf['private_only'] = True
         allowed_priv = attrs.get('allowedprivate')
         if allowed_priv:

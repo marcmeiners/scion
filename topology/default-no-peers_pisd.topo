@@ -120,6 +120,16 @@ ASes:
   "2-ff00:0:222":
     cert_issuer: 2-ff00:0:220
     underlay: UDP/IPv6
+  "25-ff00:0:534":
+    private_only_as: true
+    cert_issuer: 25-ff00:0:130
+    private_isds:
+        -   isd: 25
+            core: false
+            issuing: true
+            voting: false
+            authoritative: false
+            cert_issuer: 25-ff00:0:130
 links:
   - {a: "1-ff00:0:110#1",     b: "1-ff00:0:120-A#6",   linkAtoB: CORE}
   - {a: "1-ff00:0:110#2",     b: "1-ff00:0:130-A#104", linkAtoB: CORE, underlay: UDP/IPv6}
@@ -149,4 +159,4 @@ links:
   - {a: "2-ff00:0:211-A#4",   b: "2-ff00:0:222#301",   linkAtoB: CHILD}
   - {a: "2-ff00:0:221#1",     b: "2-ff00:0:222#302",   linkAtoB: CHILD}
   - {a: "1-ff00:0:131#2001",  b: "1-ff00:0:133#2002",  linkAtoB: CHILD, privateonly: true}
-
+  - {a: "1-ff00:0:133#6001", b: "25-ff00:0:534#6000", linkAtoB: CHILD, privateonly: true, allowedprivate: [25]}

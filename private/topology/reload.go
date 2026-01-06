@@ -115,6 +115,12 @@ func (l *Loader) IA() addr.IA {
 	return l.topo.IA()
 }
 
+func (l *Loader) PrivateOnlyAS() bool {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+	return l.topo.PrivateOnlyAS()
+}
+
 func (l *Loader) MTU() uint16 {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()

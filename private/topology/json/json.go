@@ -123,6 +123,7 @@ type Topology struct {
 	IA               string `json:"isd_as"`
 	MTU              int    `json:"mtu"`
 	EndhostPortRange string `json:"dispatched_ports"`
+	PrivateOnlyAS    bool   `json:"private_only_as,omitempty"`
 	// Attributes specify whether this is a core AS or not.
 	Attributes Attributes `json:"attributes"`
 	// PrivateISDs lists the private ISDs the AS participates in with optional role overrides.

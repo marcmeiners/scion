@@ -244,10 +244,17 @@ func realMain(ctx context.Context) error {
 		ia  addr.IA
 	}
 	privateInfos := make([]privateMembershipInfo, 0, len(privateMemberships))
+	var basePrivate *topology.PrivateISDMembership
 	for _, pm := range privateMemberships {
 		ia, err := addr.IAFrom(pm.ISD, topo.IA().AS())
 		if err != nil {
 			return serrors.Wrap("deriving private IA", err, "isd", pm.ISD, "as", topo.IA().AS())
+		}
+		if ia == topo.IA() {
+			// Match the primary IA; remember it to configure the base membership as private.
+			pmCopy := pm
+			basePrivate = &pmCopy
+			continue
 		}
 		privateInfos = append(privateInfos, privateMembershipInfo{cfg: pm, ia: ia})
 	}
@@ -334,16 +341,23 @@ func realMain(ctx context.Context) error {
 	}
 	multiInserter := newMultiBeaconInserter(beaconDB, &corePolicies, &nonCorePolicies)
 
-	membershipEnvs := []membershipEnv{
-		{
-			IA:           topo.IA(),
-			Core:         topo.Core(),
-			Store:        baseStore,
-			AllowIsdLoop: baseAllowLoop,
-			Policies:     basePolicies,
-			IsPrivate:    false,
-		},
+	baseEnv := membershipEnv{
+		IA:           topo.IA(),
+		Core:         topo.Core(),
+		Store:        baseStore,
+		AllowIsdLoop: baseAllowLoop,
+		Policies:     basePolicies,
+		IsPrivate:    false,
 	}
+	if basePrivate != nil {
+		// Treat primary IA as private if it matches a private membership.
+		baseEnv.IsPrivate = true
+		baseEnv.PrivateISD = basePrivate.ISD
+		baseEnv.CertIssuer = basePrivate.CertIssuer
+		// Adjust core flag based on the private membership role.
+		baseEnv.Core = basePrivate.Core
+	}
+	membershipEnvs := []membershipEnv{baseEnv}
 	for _, info := range privateInfos {
 		pm := info.cfg
 		ia := info.ia
@@ -477,9 +491,11 @@ func realMain(ctx context.Context) error {
 		}
 		env.Signer = cs.NewSigner(ctxSigner, env.IA, trustDB, globalCfg.General.ConfigDir)
 	}
-	privateIAs := make([]addr.IA, 0, len(membershipEnvs)-1)
-	for _, env := range membershipEnvs[1:] {
-		privateIAs = append(privateIAs, env.IA)
+	privateIAs := make([]addr.IA, 0, len(membershipEnvs))
+	for _, env := range membershipEnvs {
+		if env.IsPrivate {
+			privateIAs = append(privateIAs, env.IA)
+		}
 	}
 
 	trustengineCache := globalCfg.TrustEngine.Cache.New()

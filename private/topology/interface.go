@@ -38,6 +38,8 @@ type Topology interface {
 	MTU() uint16
 	// Core returns whether the local AS is core.
 	Core() bool
+	// PrivateOnlyAS indicates whether this AS has no public membership.
+	PrivateOnlyAS() bool
 	// PrivateISDMemberships returns the configured private ISDs for the AS.
 	PrivateISDMemberships() []PrivateISDMembership
 	// InterfaceIDs returns all interface IDS from the local AS.
@@ -182,6 +184,10 @@ func (t *topologyS) MakeHostInfos(st ServiceType) ([]*net.UDPAddr, error) {
 
 func (t *topologyS) Core() bool {
 	return t.Topology.IsCore
+}
+
+func (t *topologyS) PrivateOnlyAS() bool {
+	return t.Topology.PrivateOnlyAS
 }
 
 func (t *topologyS) PrivateISDMemberships() []PrivateISDMembership {

@@ -119,6 +119,10 @@ func membershipViews(base addr.IA, baseAttrs PrivateISDMembershipAttrs, priv []P
 		if err != nil {
 			panic(fmt.Sprintf("creating IA from ISD %d and AS %s: %v", p.ISD, base.AS(), err))
 		}
+		if ia == base {
+			// Skip duplicate of base membership (private_only_as case).
+			continue
+		}
 		ca := baseCA
 		if !p.CertIssuer.IsZero() {
 			ca = p.CertIssuer
