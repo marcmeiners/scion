@@ -160,3 +160,4 @@ links:
   - {a: "2-ff00:0:221#1",     b: "2-ff00:0:222#302",   linkAtoB: CHILD}
   - {a: "1-ff00:0:131#2001",  b: "1-ff00:0:133#2002",  linkAtoB: CHILD, privateonly: true}
   - {a: "1-ff00:0:133#6001", b: "25-ff00:0:534#6000", linkAtoB: CHILD, privateonly: true, allowedprivate: [25]}
+  - {a: "1-ff00:0:133#7001", b: "2-ff00:0:221#7002", linkAtoB: PEER, privateonly: true}
