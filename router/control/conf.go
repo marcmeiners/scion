@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"net/netip"
 	"sort"
+	"strings"
 
 	"golang.org/x/crypto/pbkdf2"
 
@@ -272,28 +273,33 @@ func confServices(dp Dataplane, cfg *Config) error {
 		return nil
 	}
 	for _, svc := range svcTypes {
-		addrs, err := cfg.Topo.Multicast(svc)
-		if err != nil {
-			// XXX assumption is that any error means there are no addresses for the SVC type
-			continue
-		}
-		// Sort to get deterministic unit test, shouldn't matter for SVC resolution
-		sort.Slice(addrs, func(i, j int) bool {
-			return addrs[i].IP.String() < addrs[j].IP.String()
-		})
-
-		// Topo.Multicast returns SCION host addresses (which just happen to be identical to udp/ip
-		// addresses). So, in theory, these are *not* underlay addresses. While the topology API
-		// represents them openly as UDPAddr, the router doesn't make that assumption. It does not
-		// know what a UDPAddr is; that's underlay business. So, addr.Host is what we give to the
-		// router. The underlays are in change of resolving the corresponding underlay address.
-		for _, a := range addrs {
-			addrPort := a.AddrPort()
-			host := addr.HostIP(addrPort.Addr())
-			if err := dp.AddSvc(cfg.IA, svc, host, addrPort.Port()); err != nil {
+		for _, name := range cfg.Topo.SVCNames(svc) {
+			pub := cfg.Topo.PublicAddress(svc, name)
+			if pub == nil {
+				continue
+			}
+			ia, err := iaFromServiceName(name)
+			if err != nil {
+				continue
+			}
+			host := addr.HostIP(pub.AddrPort().Addr())
+			if err := dp.AddSvc(ia, svc, host, pub.AddrPort().Port()); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func iaFromServiceName(name string) (addr.IA, error) {
+	trimmed := strings.TrimPrefix(name, "cs")
+	if trimmed == name {
+		trimmed = strings.TrimPrefix(name, "ds")
+	}
+	parts := strings.Split(trimmed, "-")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return 0, serrors.New("invalid service name", "name", name)
+	}
+	iaStr := strings.Replace(parts[0]+"-"+parts[1], "_", ":", 2)
+	return addr.ParseIA(iaStr)
 }

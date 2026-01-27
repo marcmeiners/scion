@@ -22,34 +22,45 @@ import (
 	"github.com/scionproto/scion/pkg/addr"
 )
 
-// A generic anycast address map. This could in fact be generalized to be a key->anyOneValue
-// with no specific networking semantics, but there's no obvious other usage at the moment.
-// This is for use by all underlay providers to implement the service mapping.
+// SvcKey identifies a service instance for a specific destination IA.
+type SvcKey struct {
+	Svc addr.SVC
+	IA  addr.IA
+}
+
+// MakeSvcKey builds a SvcKey for convenience when callers don't want to fill the struct literal.
+func MakeSvcKey(svc addr.SVC, ia addr.IA) SvcKey {
+	return SvcKey{Svc: svc, IA: ia}
+}
+
+// Anycast address map keyed by service and destination IA.
 type Services[addrT comparable] struct {
 	mtx sync.Mutex
-	m   map[addr.SVC][]addrT
+	m   map[SvcKey][]addrT
 }
 
 func NewServices[addrT comparable]() *Services[addrT] {
-	return &Services[addrT]{m: make(map[addr.SVC][]addrT)}
+	return &Services[addrT]{m: make(map[SvcKey][]addrT)}
 }
 
-func (s *Services[addrT]) AddSvc(svc addr.SVC, a addrT) {
+func (s *Services[addrT]) AddSvc(svc addr.SVC, ia addr.IA, a addrT) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	addrs := s.m[svc]
+	key := SvcKey{Svc: svc, IA: ia}
+	addrs := s.m[key]
 	if slices.Contains(addrs, a) {
 		return
 	}
-	s.m[svc] = append(addrs, a)
+	s.m[key] = append(addrs, a)
 }
 
-func (s *Services[addrT]) DelSvc(svc addr.SVC, a addrT) {
+func (s *Services[addrT]) DelSvc(svc addr.SVC, ia addr.IA, a addrT) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	addrs := s.m[svc]
+	key := SvcKey{Svc: svc, IA: ia}
+	addrs := s.m[key]
 	index := slices.Index(addrs, a)
 	if index == -1 {
 		return
@@ -57,14 +68,15 @@ func (s *Services[addrT]) DelSvc(svc addr.SVC, a addrT) {
 	addrs[index] = addrs[len(addrs)-1]
 	var zeroAddr addrT
 	addrs[len(addrs)-1] = zeroAddr
-	s.m[svc] = addrs[:len(addrs)-1]
+	s.m[key] = addrs[:len(addrs)-1]
 }
 
-func (s *Services[addrT]) Any(svc addr.SVC) (addrT, bool) {
+func (s *Services[addrT]) Any(svc addr.SVC, ia addr.IA) (addrT, bool) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	addrs := s.m[svc]
+	key := SvcKey{Svc: svc, IA: ia}
+	addrs := s.m[key]
 	if len(addrs) == 0 {
 		var zeroAddr addrT
 		return zeroAddr, false

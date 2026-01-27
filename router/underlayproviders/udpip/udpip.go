@@ -140,23 +140,23 @@ func (u *provider) SetDispatchPorts(start, end, redirect uint16) {
 }
 
 // AddSvc adds the address for the given service.
-func (u *provider) AddSvc(svc addr.SVC, host addr.Host, port uint16) error {
+func (u *provider) AddSvc(svc addr.SVC, ia addr.IA, host addr.Host, port uint16) error {
 	// We pre-resolve the addresses, which is trivial for this underlay.
 	addr := netip.AddrPortFrom(host.IP(), port)
 	if !addr.IsValid() {
 		return errInvalidServiceAddress
 	}
-	u.svc.AddSvc(svc, addr)
+	u.svc.AddSvc(svc, ia, addr)
 	return nil
 }
 
 // DelSvc deletes the address for the given service.
-func (u *provider) DelSvc(svc addr.SVC, host addr.Host, port uint16) error {
+func (u *provider) DelSvc(svc addr.SVC, ia addr.IA, host addr.Host, port uint16) error {
 	addr := netip.AddrPortFrom(host.IP(), port)
 	if !addr.IsValid() {
 		return errInvalidServiceAddress
 	}
-	u.svc.DelSvc(svc, addr)
+	u.svc.DelSvc(svc, ia, addr)
 	return nil
 }
 
@@ -882,7 +882,7 @@ func (l *internalLink) Resolve(p *router.Packet, dst addr.Host, port uint16) err
 	case addr.HostTypeSVC:
 		// For map lookup use the Base address, i.e. strip the multi cast information, because we
 		// only register base addresses in the map.
-		a, ok := l.svc.Any(dst.SVC().Base())
+		a, ok := l.svc.Any(dst.SVC().Base(), p.DstIA)
 		if !ok {
 			return router.ErrNoSVCBackend
 		}

@@ -204,21 +204,25 @@ func TestDataPlaneAddSVC(t *testing.T) {
 	t.Run("succeeds after serve", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
 		d.MockStart()
-		assert.NoError(t, d.AddSvc(addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
+		ia := addr.MustParseIA("1-ff00:0:1")
+		assert.NoError(t, d.AddSvc(ia, addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
 	})
 	t.Run("adding empty value is not allowed", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
-		assert.Error(t, d.AddSvc(addr.SvcCS, addr.HostIP(netip.Addr{}), 0))
+		ia := addr.MustParseIA("1-ff00:0:1")
+		assert.Error(t, d.AddSvc(ia, addr.SvcCS, addr.HostIP(netip.Addr{}), 0))
 	})
 	t.Run("normal set works", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
-		assert.NoError(t, d.AddSvc(addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
-		assert.NoError(t, d.AddSvc(addr.SvcDS, addr.HostIP(netip.IPv4Unspecified()), 0))
+		ia := addr.MustParseIA("1-ff00:0:1")
+		assert.NoError(t, d.AddSvc(ia, addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
+		assert.NoError(t, d.AddSvc(ia, addr.SvcDS, addr.HostIP(netip.IPv4Unspecified()), 0))
 	})
 	t.Run("set multiple times works", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
-		assert.NoError(t, d.AddSvc(addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
-		assert.NoError(t, d.AddSvc(addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
+		ia := addr.MustParseIA("1-ff00:0:1")
+		assert.NoError(t, d.AddSvc(ia, addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
+		assert.NoError(t, d.AddSvc(ia, addr.SvcCS, addr.HostIP(netip.IPv4Unspecified()), 0))
 	})
 }
 
@@ -1406,6 +1410,7 @@ func TestProcessPkt(t *testing.T) {
 				assert.NoError(
 					t,
 					dp.AddSvc(
+						addr.MustParseIA("1-ff00:0:110"),
 						addr.SvcCS,
 						addr.MustParseHost("10.0.200.200"),
 						uint16(dstUDPPort),
@@ -1451,6 +1456,7 @@ func TestProcessPkt(t *testing.T) {
 				assert.NoError(
 					t,
 					dp.AddSvc(
+						addr.MustParseIA("1-ff00:0:110"),
 						addr.SvcCS,
 						addr.MustParseHost("172.0.2.10"),
 						uint16(dstUDPPort),
@@ -1553,6 +1559,7 @@ func TestProcessPkt(t *testing.T) {
 				assert.NoError(
 					t,
 					dp.AddSvc(
+						addr.MustParseIA("1-ff00:0:110"),
 						addr.SvcCS,
 						addr.MustParseHost("172.0.2.10"),
 						uint16(dstUDPPort),

@@ -152,10 +152,10 @@ func (c *Connector) AddSvc(ia addr.IA, svc addr.SVC, a addr.Host, p uint16) erro
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	log.Debug("Adding service", "isd_as", ia, "svc", svc, "address", a)
-	if !c.ia.Equal(ia) {
-		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", a)
+	if c.ia.AS() != ia.AS() {
+		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", ia)
 	}
-	return c.DataPlane.AddSvc(svc, a, p)
+	return c.DataPlane.AddSvc(ia, svc, a, p)
 }
 
 // DelSvc deletes the service entry for the given ISD-AS and IP pair.
@@ -163,10 +163,10 @@ func (c *Connector) DelSvc(ia addr.IA, svc addr.SVC, a addr.Host, p uint16) erro
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	log.Debug("Deleting service", "isd_as", ia, "svc", svc, "address", a)
-	if !c.ia.Equal(ia) {
-		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", a)
+	if c.ia.AS() != ia.AS() {
+		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", ia)
 	}
-	return c.DataPlane.DelSvc(svc, a, p)
+	return c.DataPlane.DelSvc(ia, svc, a, p)
 }
 
 // SetKey sets the key for the given ISD-AS at the given index.

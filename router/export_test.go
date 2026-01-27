@@ -274,7 +274,7 @@ func (d *DataPlane) ProcessPkt(pkt *Packet) Disposition {
 	return Disposition(disp)
 }
 
-func ExtractServices(s *Services[netip.AddrPort]) map[addr.SVC][]netip.AddrPort {
+func ExtractServices(s *Services[netip.AddrPort]) map[SvcKey][]netip.AddrPort {
 	return s.m
 }
 

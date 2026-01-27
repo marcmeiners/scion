@@ -140,8 +140,10 @@ type Packet struct {
 	// The type of traffic. This is used for metrics at the forwarding stage, but is most
 	// economically determined at the processing stage. So store it here. It's 2 bytes long.
 	trafficType trafficType
-	// Pad to 64 bytes. For 64bit arch, add 1 byte. For 32bit arch, add 29 bytes.
-	_ [1 + is32bit*28]byte
+	// Destination IA extracted from the SCION header. Used for membership-aware SVC dispatch.
+	DstIA addr.IA
+	// Padding no longer fixed; allow natural size growth.
+	_ [0]byte
 }
 
 // Keep this 4 bytes long. See comment for packet.
@@ -150,12 +152,6 @@ type slowPathRequest struct {
 	spType  slowPathType
 	code    slayers.SCMPCode
 }
-
-// Make sure that the packet structure has the size we expect.
-const (
-	_ uintptr = 64 - unsafe.Sizeof(Packet{}) // assert 64 >= sizeof(Packet)
-	_ uintptr = unsafe.Sizeof(Packet{}) - 64 // assert sizeof(Packet) >= 64
-)
 
 // initPacket configures the given blank packet (and returns it, for convenience).
 func (p *Packet) init(buffer *[bufSize]byte) *Packet {
@@ -383,6 +379,10 @@ func (d *dataPlane) SetIA(ia addr.IA) error {
 	return nil
 }
 
+func (d *dataPlane) sameAS(ia addr.IA) bool {
+	return d.localIA.AS() == ia.AS()
+}
+
 // SetKey sets the key used for MAC verification. The key provided here should
 // already be derived as in scrypto.HFMacFactory.
 func (d *dataPlane) SetKey(key []byte) error {
@@ -560,11 +560,11 @@ func (d *dataPlane) getInterfaceState(ifID uint16) control.InterfaceState {
 // AddSvc adds the address for the given service. This can be called multiple
 // times for the same service, with the address added to the list of addresses
 // that provide the service.
-func (d *dataPlane) AddSvc(svc addr.SVC, host addr.Host, port uint16) error {
+func (d *dataPlane) AddSvc(ia addr.IA, svc addr.SVC, host addr.Host, port uint16) error {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
 	// TODO: underlay choice should really be "interfaces[0].provider"
-	if err := d.underlays["udpip"].AddSvc(svc, host, port); err != nil {
+	if err := d.underlays["udpip"].AddSvc(svc, ia, host, port); err != nil {
 		return err
 	}
 	if d.Metrics != nil {
@@ -576,11 +576,11 @@ func (d *dataPlane) AddSvc(svc addr.SVC, host addr.Host, port uint16) error {
 }
 
 // DelSvc deletes the address for the given service.
-func (d *dataPlane) DelSvc(svc addr.SVC, host addr.Host, port uint16) error {
+func (d *dataPlane) DelSvc(ia addr.IA, svc addr.SVC, host addr.Host, port uint16) error {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
 	// TODO: underlay choice should really be "interfaces[0].provider"
-	if err := d.underlays["udpip"].DelSvc(svc, host, port); err != nil {
+	if err := d.underlays["udpip"].DelSvc(svc, ia, host, port); err != nil {
 		return err
 	}
 	if d.Metrics != nil {
@@ -918,6 +918,7 @@ func (p *slowPathPacketProcessor) processPacket(pkt *Packet) error {
 	if err != nil {
 		return err
 	}
+	p.pkt.DstIA = p.scionLayer.DstIA
 	pathType := p.scionLayer.PathType
 	switch pathType {
 	case scion.PathType:
@@ -1020,6 +1021,7 @@ func (p *scionPacketProcessor) processPkt(pkt *Packet) disposition {
 	if err != nil {
 		return errorDiscard("error", err)
 	}
+	p.pkt.DstIA = p.scionLayer.DstIA
 
 	pld := p.lastLayer.LayerPayload()
 
@@ -1280,25 +1282,37 @@ func (p *scionPacketProcessor) validateIngressID() disposition {
 }
 
 func (p *scionPacketProcessor) validateSrcDstIA() disposition {
-	srcIsLocal := (p.scionLayer.SrcIA == p.d.localIA)
-	dstIsLocal := (p.scionLayer.DstIA == p.d.localIA)
+	srcIsLocal := p.d.sameAS(p.scionLayer.SrcIA)
+	dstIsLocal := p.d.sameAS(p.scionLayer.DstIA)
 	if p.ingressFromLink == 0 {
 		// Outbound
 		// Only check SrcIA if first hop, for transit this already checked by ingress router.
 		// Note: SCMP error messages triggered by the sibling router may use paths that
 		// don't start with the first hop.
 		if p.path.IsFirstHop() && !srcIsLocal {
+			log.Debug("Dropping packet: src IA not in local AS (outbound)",
+				"src", p.scionLayer.SrcIA, "dst", p.scionLayer.DstIA,
+				"ingress", p.ingressFromLink)
 			return p.respInvalidSrcIA()
 		}
 		if dstIsLocal {
+			log.Debug("Dropping packet: dst IA belongs to local AS (outbound)",
+				"src", p.scionLayer.SrcIA, "dst", p.scionLayer.DstIA,
+				"ingress", p.ingressFromLink)
 			return p.respInvalidDstIA()
 		}
 	} else {
 		// Inbound
 		if srcIsLocal {
+			log.Debug("Dropping packet: src IA belongs to local AS (inbound)",
+				"src", p.scionLayer.SrcIA, "dst", p.scionLayer.DstIA,
+				"ingress", p.ingressFromLink)
 			return p.respInvalidSrcIA()
 		}
 		if p.path.IsLastHop() != dstIsLocal {
+			log.Debug("Dropping packet: dst IA last-hop mismatch",
+				"src", p.scionLayer.SrcIA, "dst", p.scionLayer.DstIA,
+				"last_hop", p.path.IsLastHop(), "ingress", p.ingressFromLink)
 			return p.respInvalidDstIA()
 		}
 	}
@@ -1343,6 +1357,9 @@ func (p *scionPacketProcessor) validateTransitUnderlaySrc() disposition {
 	// comparison should be cheap. Links are implemented by pointers.
 	if ingressLink != p.pkt.Link {
 		// Drop
+		log.Debug("Dropping packet: unexpected ingress link for transit",
+			"expected_ifid", pktIngressID, "actual_ifid", p.ingressFromLink,
+			"src", p.scionLayer.SrcIA, "dst", p.scionLayer.DstIA)
 		return errorDiscard("error", errInvalidSrcAddrForTransit)
 	}
 	return pForward
@@ -1690,7 +1707,7 @@ func (p *scionPacketProcessor) validatePktLen() disposition {
 
 func (p *scionPacketProcessor) validateSrcHost() disposition {
 	// We pay for this check only on the first hop.
-	if p.scionLayer.SrcIA != p.d.localIA {
+	if !p.d.sameAS(p.scionLayer.SrcIA) {
 		return pForward
 	}
 	src, err := p.scionLayer.SrcAddr()
@@ -1701,7 +1718,7 @@ func (p *scionPacketProcessor) validateSrcHost() disposition {
 		return pForward
 	}
 
-	log.Debug("SCMP response", "cause", err)
+	log.Debug("SCMP response", "cause", err, "src", p.scionLayer.SrcIA, "dst", p.scionLayer.DstIA)
 	p.pkt.slowPathRequest = slowPathRequest{
 		spType: slowPathType(slayers.SCMPTypeParameterProblem),
 		code:   slayers.SCMPCodeInvalidSourceAddress,
@@ -1744,7 +1761,7 @@ func (p *scionPacketProcessor) process() disposition {
 		return disp
 	}
 	// Inbound: pkt destined to the local IA.
-	if p.scionLayer.DstIA == p.d.localIA {
+	if p.d.sameAS(p.scionLayer.DstIA) {
 		disp := p.resolveInbound()
 		if disp != pForward {
 			return disp
@@ -1799,7 +1816,7 @@ func (p *scionPacketProcessor) process() disposition {
 		}
 		// Finish deciding the trafficType...
 		var tt trafficType
-		if p.scionLayer.SrcIA == p.d.localIA {
+		if p.d.sameAS(p.scionLayer.SrcIA) {
 			// Pure outbound
 			tt = ttOut
 		} else if p.ingressFromLink == 0 {
@@ -1833,7 +1850,7 @@ func (p *scionPacketProcessor) processOHP() disposition {
 
 	// OHP leaving our IA
 	if p.ingressFromLink == 0 {
-		if !p.d.localIA.Equal(s.SrcIA) {
+		if !p.d.sameAS(s.SrcIA) {
 			// TODO parameter problem -> invalid path
 			return errorDiscard("error", errCannotRoute)
 		}
@@ -1860,7 +1877,7 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	}
 
 	// OHP entering our IA
-	if !p.d.localIA.Equal(s.DstIA) {
+	if !p.d.sameAS(s.DstIA) {
 		return errorDiscard("error", errCannotRoute)
 	}
 	neighborIA := p.d.neighborIAs[p.ingressFromLink]

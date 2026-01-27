@@ -29,47 +29,50 @@ func TestServicesAddSvc(t *testing.T) {
 	host2 := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), 1337)
 	host1Port := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), 1338)
 	all := []netip.AddrPort{host1, host2, host1Port}
+	ia := addr.MustParseIA("1-ff00:0:1")
 
 	s := router.NewServices[netip.AddrPort]()
-	s.AddSvc(addr.SvcCS, host1)
-	s.AddSvc(addr.SvcCS, host2)
-	s.AddSvc(addr.SvcCS, host1Port)
-	assert.ElementsMatch(t, all, router.ExtractServices(s)[addr.SvcCS])
+	s.AddSvc(addr.SvcCS, ia, host1)
+	s.AddSvc(addr.SvcCS, ia, host2)
+	s.AddSvc(addr.SvcCS, ia, host1Port)
+	assert.ElementsMatch(t, all, router.ExtractServices(s)[router.MakeSvcKey(addr.SvcCS, ia)])
 
-	s.AddSvc(addr.SvcDS, host1)
-	assert.ElementsMatch(t, []netip.AddrPort{host1}, router.ExtractServices(s)[addr.SvcDS])
-	assert.ElementsMatch(t, all, router.ExtractServices(s)[addr.SvcCS])
+	s.AddSvc(addr.SvcDS, ia, host1)
+	assert.ElementsMatch(t, []netip.AddrPort{host1}, router.ExtractServices(s)[router.MakeSvcKey(addr.SvcDS, ia)])
+	assert.ElementsMatch(t, all, router.ExtractServices(s)[router.MakeSvcKey(addr.SvcCS, ia)])
 }
 
 func TestServiceDelSvc(t *testing.T) {
 	host1 := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), 1337)
 	host2 := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), 1337)
 	all := []netip.AddrPort{host1, host2}
+	ia := addr.MustParseIA("1-ff00:0:1")
 
 	s := router.NewServices[netip.AddrPort]()
-	assert.NotPanics(t, func() { s.DelSvc(addr.SvcCS, host1) })
+	assert.NotPanics(t, func() { s.DelSvc(addr.SvcCS, ia, host1) })
 
-	s.AddSvc(addr.SvcCS, host1)
-	s.AddSvc(addr.SvcCS, host2)
-	assert.ElementsMatch(t, all, router.ExtractServices(s)[addr.SvcCS])
+	s.AddSvc(addr.SvcCS, ia, host1)
+	s.AddSvc(addr.SvcCS, ia, host2)
+	assert.ElementsMatch(t, all, router.ExtractServices(s)[router.MakeSvcKey(addr.SvcCS, ia)])
 
-	s.DelSvc(addr.SvcCS, host2)
-	assert.ElementsMatch(t, []netip.AddrPort{host1}, router.ExtractServices(s)[addr.SvcCS])
+	s.DelSvc(addr.SvcCS, ia, host2)
+	assert.ElementsMatch(t, []netip.AddrPort{host1}, router.ExtractServices(s)[router.MakeSvcKey(addr.SvcCS, ia)])
 }
 
 func TestServicesAny(t *testing.T) {
 	host1 := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), 1337)
 	host2 := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), 1337)
+	ia := addr.MustParseIA("1-ff00:0:1")
 
 	s := router.NewServices[netip.AddrPort]()
-	s.AddSvc(addr.SvcCS, host1)
-	s.AddSvc(addr.SvcCS, host2)
+	s.AddSvc(addr.SvcCS, ia, host1)
+	s.AddSvc(addr.SvcCS, ia, host2)
 
 	var got []netip.AddrPort
 	for len(got) < 2 {
-		a, ok := s.Any(addr.SvcCS)
+		a, ok := s.Any(addr.SvcCS, ia)
 		assert.True(t, ok)
 		got = append(got, a)
 	}
-	assert.ElementsMatch(t, []netip.AddrPort{host1, host2}, router.ExtractServices(s)[addr.SvcCS])
+	assert.ElementsMatch(t, []netip.AddrPort{host1, host2}, router.ExtractServices(s)[router.MakeSvcKey(addr.SvcCS, ia)])
 }
