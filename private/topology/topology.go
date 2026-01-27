@@ -66,8 +66,10 @@ type (
 		IA                  addr.IA
 		IsCore              bool
 		MTU                 int
+		PrivateOnlyAS       bool
 		DispatchedPortStart uint16
 		DispatchedPortEnd   uint16
+		PrivateISDs         []PrivateISDMembership
 
 		BR        map[string]BRInfo
 		IFInfoMap IfInfoMap
@@ -85,6 +87,16 @@ type (
 		DataAddr        *net.UDPAddr
 		ProbeAddr       *net.UDPAddr
 		AllowInterfaces []uint64
+	}
+
+	// PrivateISDMembership captures the membership of the local AS in a private ISD.
+	PrivateISDMembership struct {
+		ISD           addr.ISD
+		Core          bool
+		Issuing       bool
+		Voting        bool
+		Authoritative bool
+		CertIssuer    addr.IA
 	}
 
 	// BRInfo is a list of AS-wide unique interface IDs for a router. These IDs are also used
@@ -128,6 +140,9 @@ type (
 		LinkType     LinkType       // (Child, Parent, Core or Peering)
 		MTU          int            // of the link (configured - could be wrong and needs update)
 		BFD          BFD            // (configuration of)
+		PrivateISDs  []addr.ISD     // Private ISDs shared on this interface
+		PrivateOnly  bool           // If true, only private traffic is allowed
+		AllowedPriv  []addr.ISD     // Optional allowlist of private ISDs permitted
 	}
 
 	// IDAddrMap maps process IDs to their topology addresses.
@@ -217,6 +232,7 @@ func (t *RWTopology) populateMeta(raw *jsontopo.Topology) error {
 		return serrors.New("ISD-AS contains wildcard", "isd_as", t.IA)
 	}
 	t.MTU = raw.MTU
+	t.PrivateOnlyAS = raw.PrivateOnlyAS
 
 	t.DispatchedPortStart, t.DispatchedPortEnd, err = validatePortRange(raw.EndhostPortRange)
 	if err != nil {
@@ -231,6 +247,40 @@ func (t *RWTopology) populateMeta(raw *jsontopo.Topology) error {
 		}
 	}
 	t.IsCore = isCore
+	if len(raw.PrivateISDs) > 0 {
+		members := make([]PrivateISDMembership, 0, len(raw.PrivateISDs))
+		seen := make(map[addr.ISD]struct{})
+		for _, entry := range raw.PrivateISDs {
+			isd := addr.ISD(entry.ISD)
+			if isd == 0 {
+				return serrors.New("private ISD entry missing ISD")
+			}
+			if _, ok := seen[isd]; ok {
+				continue
+			}
+			seen[isd] = struct{}{}
+			var issuer addr.IA
+			if entry.CertIssuer != "" {
+				parsed, err := addr.ParseIA(entry.CertIssuer)
+				if err != nil {
+					return serrors.Wrap("parsing private ISD cert issuer", err, "isd", isd)
+				}
+				issuer = parsed
+			}
+			members = append(members, PrivateISDMembership{
+				ISD:           isd,
+				Core:          entry.Core,
+				Issuing:       entry.Issuing,
+				Voting:        entry.Voting,
+				Authoritative: entry.Authoritative,
+				CertIssuer:    issuer,
+			})
+		}
+		sort.Slice(members, func(i, j int) bool { return members[i].ISD < members[j].ISD })
+		t.PrivateISDs = members
+	} else {
+		t.PrivateISDs = nil
+	}
 	return nil
 }
 
@@ -291,6 +341,7 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 				BRName:       name,
 				InternalAddr: intAddr,
 				MTU:          rawIntf.MTU,
+				PrivateOnly:  rawIntf.PrivateOnly,
 			}
 			if ifinfo.IA, err = addr.ParseIA(rawIntf.IA); err != nil {
 				return err
@@ -325,6 +376,18 @@ func (t *RWTopology) populateBR(raw *jsontopo.Topology) error {
 			}
 			ifinfo.Local = rawIntf.Underlay.Local
 			ifinfo.Remote = rawIntf.Underlay.Remote
+			if len(rawIntf.PrivateISDs) > 0 {
+				ifinfo.PrivateISDs = make([]addr.ISD, 0, len(rawIntf.PrivateISDs))
+				for _, v := range rawIntf.PrivateISDs {
+					ifinfo.PrivateISDs = append(ifinfo.PrivateISDs, addr.ISD(v))
+				}
+			}
+			if len(rawIntf.AllowedPrivate) > 0 {
+				ifinfo.AllowedPriv = make([]addr.ISD, 0, len(rawIntf.AllowedPrivate))
+				for _, v := range rawIntf.AllowedPrivate {
+					ifinfo.AllowedPriv = append(ifinfo.AllowedPriv, addr.ISD(v))
+				}
+			}
 			brInfo.IFs[ifID] = &ifinfo
 			t.IFInfoMap[ifID] = ifinfo
 		}
@@ -429,6 +492,7 @@ func (t *RWTopology) Copy() *RWTopology {
 		IsCore:              t.IsCore,
 		DispatchedPortStart: t.DispatchedPortStart,
 		DispatchedPortEnd:   t.DispatchedPortEnd,
+		PrivateISDs:         copyPrivateMemberships(t.PrivateISDs),
 
 		BR:        copyBRMap(t.BR),
 		IFInfoMap: t.IFInfoMap.copy(),
@@ -439,6 +503,15 @@ func (t *RWTopology) Copy() *RWTopology {
 		HiddenSegmentLookup:       t.HiddenSegmentLookup.copy(),
 		HiddenSegmentRegistration: t.HiddenSegmentRegistration.copy(),
 	}
+}
+
+func copyPrivateMemberships(members []PrivateISDMembership) []PrivateISDMembership {
+	if members == nil {
+		return nil
+	}
+	out := make([]PrivateISDMembership, len(members))
+	copy(out, members)
+	return out
 }
 
 func copySIGMap(m map[string]GatewayInfo) map[string]GatewayInfo {
@@ -626,6 +699,9 @@ func (i *IFInfo) copy() *IFInfo {
 		return nil
 	}
 	cpy := *i
+	if len(i.PrivateISDs) > 0 {
+		cpy.PrivateISDs = append([]addr.ISD(nil), i.PrivateISDs...)
+	}
 	return &cpy
 }
 

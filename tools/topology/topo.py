@@ -98,6 +98,9 @@ class TopoGenerator(object):
         self.as_list = defaultdict(list)
         self.links = defaultdict(list)
         self.ifid_map = {}
+        self.private_only_flags = {}
+        self.local_memberships = {}
+        self.membership_base_dirs = {}
 
     def _reg_addr(self, topo_id: TopoID, elem_id, addr_type):
         subnet = self.args.subnet_gen[addr_type].register(str(topo_id))
@@ -141,25 +144,74 @@ class TopoGenerator(object):
         return self.topo_dicts, networks
 
     def _register_addrs(self, topo_id, as_conf):
-        self._register_srv_entries(topo_id, as_conf)
+        memberships = self._compute_local_memberships(topo_id, as_conf)
+        self.local_memberships[topo_id] = memberships
+        self._register_srv_entries(topo_id, as_conf, memberships)
         self._register_br_entries(topo_id, as_conf)
         if self.args.sig:
-            self._register_sig(topo_id, as_conf)
-        self._register_sciond(topo_id, as_conf)
+            self._register_sig(topo_id, as_conf, memberships)
+        self._register_sciond(topo_id, as_conf, memberships)
 
-    def _register_srv_entries(self, topo_id, as_conf):
+    def _compute_local_memberships(self, topo_id, as_conf):
+        _, memberships = self._compute_memberships_and_private_isds(topo_id, as_conf, mutate=False)
+        return memberships
+
+    def _compute_memberships_and_private_isds(self, topo_id, as_conf, mutate=True):
+        private_isds = self._sanitize_private_isds(as_conf.get('private_isds'))
+        base_isd = int(topo_id.isd_str())
+        private_only_as = bool(as_conf.get('private_only_as', False))
+        if private_only_as:
+            if base_isd not in [int(entry['isd']) for entry in private_isds]:
+                private_isds.append({
+                    'isd': base_isd,
+                    'core': bool(as_conf.get('core', False)),
+                    'issuing': bool(as_conf.get('issuing', False)),
+                    'voting': bool(as_conf.get('voting', False)),
+                    'authoritative': bool(as_conf.get('authoritative', False)),
+                    'cert_issuer': as_conf.get('cert_issuer'),
+                })
+        base_attrs = {
+            'core': bool(as_conf.get('core', False)),
+            'issuing': bool(as_conf.get('issuing', False)),
+            'voting': bool(as_conf.get('voting', False)),
+            'authoritative': bool(as_conf.get('authoritative', False)),
+            'cert_issuer': as_conf.get('cert_issuer'),
+        }
+        norm_private_isds = []
+        for entry in private_isds:
+            entry = dict(entry)
+            entry.setdefault('core', base_attrs['core'])
+            entry.setdefault('issuing', base_attrs['issuing'])
+            entry.setdefault('voting', base_attrs['voting'])
+            entry.setdefault('authoritative', base_attrs['authoritative'])
+            if entry.get('cert_issuer') is None and base_attrs['cert_issuer']:
+                entry['cert_issuer'] = base_attrs['cert_issuer']
+            norm_private_isds.append(entry)
+        memberships = [topo_id]
+        as_part = topo_id.as_str()
+        for entry in norm_private_isds:
+            isd = int(entry['isd'])
+            ia = TopoID(f"{isd}-{as_part}")
+            memberships.append(ia)
+        if mutate:
+            return norm_private_isds, memberships
+        return norm_private_isds, memberships
+
+    def _register_srv_entries(self, topo_id, as_conf, memberships):
         srvs = [("control_servers", DEFAULT_CONTROL_SERVERS, "cs")]
         for conf_key, def_num, nick in srvs:
-            self._register_srv_entry(topo_id, as_conf, conf_key, def_num, nick)
+            self._register_srv_entry(topo_id, as_conf, conf_key, def_num, nick, memberships)
 
-    def _register_srv_entry(self, topo_id, as_conf, conf_key, def_num, nick):
+    def _register_srv_entry(self, topo_id, as_conf, conf_key, def_num, nick, memberships):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
-        count = self._srv_count(as_conf, conf_key, def_num)
-        for i in range(1, count + 1):
-            elem_id = "%s%s-%s" % (nick, topo_id.file_fmt(), i)
-            if not self.args.docker:
-                self.args.port_gen.register(elem_id)
-            self._reg_addr(topo_id, elem_id, addr_type)
+        targets = [topo_id] if conf_key != "control_servers" else memberships
+        for mem in targets:
+            count = self._srv_count(mem, as_conf, conf_key, def_num)
+            for i in range(1, count + 1):
+                elem_id = "%s%s-%s" % (nick, mem.file_fmt(), i)
+                if not self.args.docker:
+                    self.args.port_gen.register(elem_id)
+                self._reg_addr(mem, elem_id, addr_type)
 
     def _register_br_entries(self, topo_id, as_conf):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
@@ -175,32 +227,43 @@ class TopoGenerator(object):
         if not self.args.docker:
             self.args.port_gen.register(local_br + "_internal")
 
-    def _register_sig(self, topo_id, as_conf):
+    def _register_sig(self, topo_id, as_conf, memberships):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
         self._reg_addr(topo_id, "sig" + topo_id.file_fmt(), addr_type)
 
-    def _register_sciond(self, topo_id, as_conf):
+    def _register_sciond(self, topo_id, as_conf, memberships):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
-        self._reg_addr(topo_id, "sd" + topo_id.file_fmt(), addr_type)
-        # Always register the tester element. This causes the generator to create a
-        # bridge in the docker topology, which SCIOND, SIG (if enabled) and
-        # client applications can use to communicate.
-        self._reg_addr(topo_id, "tester_" + topo_id.file_fmt(), addr_type)
+        for mem in memberships:
+            self._reg_addr(mem, "sd" + mem.file_fmt(), addr_type)
+            # Always register the tester element. This causes the generator to create a
+            # bridge in the docker topology, which SCIOND, SIG (if enabled) and
+            # client applications can use to communicate.
+            self._reg_addr(mem, "tester_" + mem.file_fmt(), addr_type)
 
-    def _br_name(self, ep, assigned_br_id, br_ids, if_ids):
+    def _br_name(self, ep, assigned_br_id, br_ids, if_ids, reuse_only=False):
         br_name = ep.br_name()
         if br_name:
             # BR with multiple interfaces, reuse assigned id
             br_id = assigned_br_id.get(br_name)
             if br_id is None:
                 # assign new id
-                br_ids[ep] += 1
-                assigned_br_id[br_name] = br_id = br_ids[ep]
+                if reuse_only and br_ids[ep] > 0:
+                    br_id = br_ids[ep]
+                else:
+                    br_ids[ep] += 1
+                    br_id = br_ids[ep]
+                assigned_br_id[br_name] = br_id
         else:
             # BR with single interface
-            br_ids[ep] += 1
-            br_id = br_ids[ep]
+            if reuse_only and br_ids[ep] > 0:
+                br_id = br_ids[ep]
+            else:
+                br_ids[ep] += 1
+                br_id = br_ids[ep]
         br = "br%s-%d" % (ep.file_fmt(), br_id)
+        if reuse_only:
+            # Used when cloning membership interfaces: keep BR name/ID, skip ifid assignment.
+            return br, None
         ifid = ep.ifid
         if self.args.random_ifids or not ifid:
             ifid = if_ids[ep].new()
@@ -218,20 +281,38 @@ class TopoGenerator(object):
             a = LinkEP(attrs.pop("a"))
             b = LinkEP(attrs.pop("b"))
             linkto = LinkType[attrs.pop("linkAtoB").upper()]
+            if attrs.get("privateonly") and linkto == LinkType.CORE:
+                logging.critical("privateonly is not allowed on CORE links (%s <-> %s)", a, b)
+                sys.exit(1)
             linkto_a = linkto_b = linkto
             if linkto == LinkType.CHILD:
                 linkto_a = LinkType.PARENT
                 linkto_b = LinkType.CHILD
-            a_br, a_ifid = self._br_name(a, assigned_br_id, br_ids, if_ids)
-            b_br, b_ifid = self._br_name(b, assigned_br_id, br_ids, if_ids)
-            self.links[a].append((linkto_b, b, attrs, a_br, b_br, a_ifid, b_ifid))
-            self.links[b].append((linkto_a, a, attrs, b_br, a_br, b_ifid, a_ifid))
-            a_desc = "%s %s" % (a_br, a_ifid)
-            b_desc = "%s %s" % (b_br, b_ifid)
-            self.ifid_map.setdefault(str(a), {})
-            self.ifid_map[str(a)][a_desc] = b_desc
-            self.ifid_map.setdefault(str(b), {})
-            self.ifid_map[str(b)][b_desc] = a_desc
+            shared_private_isds = self._shared_private_isds(a, b, attrs)
+            # Base public link (kept unless privateonly is set)
+            if not attrs.get("privateonly"):
+                a_br, a_ifid = self._br_name(a, assigned_br_id, br_ids, if_ids)
+                b_br, b_ifid = self._br_name(b, assigned_br_id, br_ids, if_ids)
+                self._append_link(a, b, linkto_a, linkto_b, attrs, a_br, b_br, a_ifid, b_ifid)
+            # Per-membership cloned links
+            for isd in shared_private_isds:
+                a_br, _ = self._br_name(a, assigned_br_id, br_ids, if_ids, reuse_only=True)
+                b_br, _ = self._br_name(b, assigned_br_id, br_ids, if_ids, reuse_only=True)
+                a_ifid = if_ids[a].new()
+                b_ifid = if_ids[b].new()
+                mem_attrs = dict(attrs)
+                mem_attrs["membership_isd"] = isd
+                self._append_link(a, b, linkto_a, linkto_b, mem_attrs, a_br, b_br, a_ifid, b_ifid)
+
+    def _append_link(self, a, b, linkto_a, linkto_b, attrs, a_br, b_br, a_ifid, b_ifid):
+        self.links[a].append((linkto_b, b, attrs, a_br, b_br, a_ifid, b_ifid))
+        self.links[b].append((linkto_a, a, attrs, b_br, a_br, b_ifid, a_ifid))
+        a_desc = "%s %s" % (a_br, a_ifid)
+        b_desc = "%s %s" % (b_br, b_ifid)
+        self.ifid_map.setdefault(str(a), {})
+        self.ifid_map[str(a)][a_desc] = b_desc
+        self.ifid_map.setdefault(str(b), {})
+        self.ifid_map[str(b)][b_desc] = a_desc
 
     def _generate_as_topo(self, topo_id, as_conf):
         mtu = as_conf.get('mtu', self.args.default_mtu)
@@ -240,6 +321,13 @@ class TopoGenerator(object):
         for attr in ['core']:
             if as_conf.get(attr, False):
                 attributes.append(attr)
+        private_only_as = bool(as_conf.get('private_only_as', False))
+        private_isds, memberships = self._compute_memberships_and_private_isds(topo_id, as_conf)
+        if private_isds:
+            as_conf['private_isds'] = private_isds
+        else:
+            as_conf.pop('private_isds', None)
+        self.private_only_flags[topo_id] = private_only_as
         self.topo_dicts[topo_id] = {
             'attributes': attributes,
             'isd_as': str(topo_id),
@@ -254,7 +342,18 @@ class TopoGenerator(object):
             # to self._gen_topo
             'test_dispatcher': as_conf.get('test_dispatcher', True),
             'dispatched_ports': as_conf.get('dispatched_ports', self.args.dispatched_ports),
+            'private_only_as': private_only_as,
         }
+        self.topo_dicts[topo_id]['local_ias'] = [str(m) for m in memberships]
+        # Record membership base dirs (relative to output)
+        base_dir = topo_id.base_dir(self.args.output_dir)
+        mem_dirs = {}
+        for mem in memberships:
+            mem_dirs[str(mem)] = os.path.join(base_dir, f"isd{mem.isd_str()}")
+        self.membership_base_dirs[str(topo_id)] = mem_dirs
+        self.topo_dicts[topo_id]['membership_base_dirs'] = mem_dirs
+        if private_isds:
+            self.topo_dicts[topo_id]['private_isds'] = private_isds
         for i in SCION_SERVICE_NAMES:
             self.topo_dicts[topo_id][i] = {}
         self._gen_srv_entries(topo_id, as_conf)
@@ -272,18 +371,22 @@ class TopoGenerator(object):
     def _gen_srv_entry(self, topo_id, as_conf, conf_key, def_num, nick,
                        topo_key, uses_dispatcher=True):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
-        count = self._srv_count(as_conf, conf_key, def_num)
-        for i in range(1, count + 1):
-            elem_id = "%s%s-%s" % (nick, topo_id.file_fmt(), i)
+        memberships = self.local_memberships.get(topo_id, [topo_id])
+        targets = [topo_id] if conf_key != "control_servers" else memberships
+        for mem in targets:
+            count = self._srv_count(mem, as_conf, conf_key, def_num)
+            for i in range(1, count + 1):
+                elem_id = "%s%s-%s" % (nick, mem.file_fmt(), i)
 
-            port = self._default_ctrl_port(nick)
-            if not self.args.docker:
-                port = self.args.port_gen.register(elem_id)
+                port = self._default_ctrl_port(nick)
+                if not self.args.docker:
+                    port = self.args.port_gen.register(elem_id)
 
-            d = {
-                'addr': join_host_port(self._reg_addr(topo_id, elem_id, addr_type).ip, port),
-            }
-            self.topo_dicts[topo_id][topo_key][elem_id] = d
+                d = {
+                    'addr': join_host_port(self._reg_addr(mem, elem_id, addr_type).ip, port),
+                    'isd_as': str(mem),
+                }
+                self.topo_dicts[topo_id][topo_key][elem_id] = d
 
     def _default_ctrl_port(self, nick):
         if nick == "cs":
@@ -291,7 +394,7 @@ class TopoGenerator(object):
         print('Invalid nick: %s' % nick)
         sys.exit(1)
 
-    def _srv_count(self, as_conf, conf_key, def_num):
+    def _srv_count(self, topo_id, as_conf, conf_key, def_num):
         count = as_conf.get(conf_key, def_num)
         if conf_key == "control_servers":
             count = 1
@@ -311,7 +414,10 @@ class TopoGenerator(object):
 
         intl_addr = self._reg_addr(local, local_br + "_internal", addr_type)
 
-        intf = self._gen_br_intf(remote, r_ifid, local_addr, remote_addr, attrs, remote_type)
+        shared_private_isds = self._shared_private_isds(local, remote, attrs)
+        intf = self._gen_br_intf(local, remote, r_ifid, local_addr, remote_addr, attrs, remote_type, shared_private_isds)
+        if shared_private_isds:
+            intf['private_isds'] = shared_private_isds
 
         if self.topo_dicts[local]["border_routers"].get(local_br) is None:
             intl_port = 30042
@@ -328,20 +434,79 @@ class TopoGenerator(object):
             # There is already a BR entry, add interface
             self.topo_dicts[local]["border_routers"][local_br]['interfaces'][l_ifid] = intf
 
-    def _gen_br_intf(self, remote, r_ifid, local_addr, remote_addr, attrs, remote_type):
+    def _gen_br_intf(self, local, remote, r_ifid, local_addr, remote_addr, attrs, remote_type, shared_private_isds=None):
         link_to = remote_type.name.lower()
+        remote_ia = str(remote)
+        membership_isd = attrs.get('membership_isd')
+        # If either endpoint is private-only, force the link IA to that AS's base private ISD.
+        local_is_private_only = self.private_only_flags.get(local, False)
+        remote_is_private_only = self.private_only_flags.get(remote, False)
+        if membership_isd is not None:
+            remote_ia = f"{membership_isd}-{remote.as_str()}"
+        elif local_is_private_only and remote_is_private_only:
+            if local.isd == remote.isd:
+                remote_ia = f"{local.isd_str()}-{remote.as_str()}"
+            else:
+                if shared_private_isds:
+                    remote_ia = f"{shared_private_isds[0]}-{remote.as_str()}"
+                else:
+                    logging.critical(
+                        "Mismatched private-only ISDs on link between %s and %s", local, remote
+                    )
+                    sys.exit(1)
+        elif local_is_private_only and int(local.isd_str()) in self._private_isds_for(remote):
+            remote_ia = f"{local.isd_str()}-{remote.as_str()}"
+        elif remote_is_private_only and int(remote.isd_str()) in self._private_isds_for(local):
+            remote_ia = f"{remote.isd_str()}-{remote.as_str()}"
+        elif shared_private_isds and (attrs.get('privateonly')):
+            remote_ia = f"{shared_private_isds[0]}-{remote.as_str()}"
         intf = {
             'underlay': {
                 'local': join_host_port(local_addr.ip, SCION_ROUTER_PORT),
                 'remote': join_host_port(remote_addr.ip, SCION_ROUTER_PORT),
             },
-            'isd_as': str(remote),
+            'isd_as': remote_ia,
             'link_to': link_to,
             'mtu': attrs.get('mtu', self.args.default_mtu),
         }
         if link_to == 'peer':
             intf['remote_interface_id'] = r_ifid
+        # If the AS is private only, automatically make all neigboring link private only too
+        if attrs.get('privateonly') or self.private_only_flags.get(local, False):
+            intf['private_only'] = True
+        allowed_priv = attrs.get('allowedprivate')
+        if allowed_priv:
+            try:
+                intf['allowed_private'] = [int(v) for v in allowed_priv]
+            except (TypeError, ValueError):
+                logging.critical("Invalid allowedprivate values: %s", allowed_priv)
+                sys.exit(1)
         return intf
+
+    def _private_isds_for(self, topo_id):
+        as_conf = self.args.topo_config_dict["ASes"].get(str(topo_id), {})
+        entries = as_conf.get('private_isds', [])
+        result = set()
+        for entry in entries:
+            if isinstance(entry, dict):
+                isd_value = entry.get('isd')
+            else:
+                isd_value = entry
+            if isd_value is None:
+                continue
+            try:
+                result.add(int(isd_value))
+            except (TypeError, ValueError):
+                logging.critical("Invalid private ISD '%s' for %s", entry, topo_id)
+                sys.exit(1)
+        return result
+
+    def _shared_private_isds(self, local, remote, attrs=None):
+        attrs = attrs or {}
+        local_set = self._private_isds_for(local)
+        remote_set = self._private_isds_for(remote)
+        shared = set(local_set & remote_set)
+        return sorted(shared)
 
     def _gen_sig_entries(self, topo_id, as_conf):
         addr_type = addr_type_from_underlay(as_conf.get('underlay', DEFAULT_UNDERLAY))
@@ -356,6 +521,56 @@ class TopoGenerator(object):
         }
         self.topo_dicts[topo_id]['sigs'][elem_id] = d
 
+    def _sanitize_private_isds(self, raw):
+        if not raw:
+            return []
+        seen = {}
+        for value in raw:
+            if isinstance(value, dict):
+                isd_value = value.get('isd')
+                entry = {
+                    'core': bool(value.get('core', False)),
+                    'issuing': bool(value.get('issuing', False)),
+                    'voting': bool(value.get('voting', False)),
+                    'authoritative': bool(value.get('authoritative', False)),
+                    'cert_issuer': value.get('cert_issuer'),
+                }
+            else:
+                isd_value = value
+                entry = {
+                    'core': False,
+                    'issuing': False,
+                    'voting': False,
+                    'authoritative': False,
+                    'cert_issuer': None,
+                }
+            try:
+                isd = int(isd_value)
+            except (TypeError, ValueError):
+                logging.critical("Invalid private ISD '%s'", value)
+                sys.exit(1)
+            if isd < 16 or isd > 63:
+                logging.critical("Private ISD %s outside permitted range [16, 63]", isd)
+                sys.exit(1)
+            if isd not in seen:
+                seen[isd] = entry
+            else:
+                for key, val in entry.items():
+                    if key == 'cert_issuer':
+                        if seen[isd][key] is None and val:
+                            seen[isd][key] = val
+                    else:
+                        seen[isd][key] = seen[isd][key] or val
+        result = []
+        # Sorting the keys before emitting the list ensures we always write the memberships in the same order, which makes the generated topology and tests reproducible
+        for isd in sorted(seen):
+            entry = {'isd': isd, 'core': seen[isd]['core'], 'issuing': seen[isd]['issuing'],
+                     'voting': seen[isd]['voting'], 'authoritative': seen[isd]['authoritative']}
+            if seen[isd]['cert_issuer']:
+                entry['cert_issuer'] = seen[isd]['cert_issuer']
+            result.append(entry)
+        return result
+
     def _generate_as_list(self, topo_id, as_conf):
         if as_conf.get('core', False):
             key = "Core"
@@ -364,10 +579,58 @@ class TopoGenerator(object):
         self.as_list[key].append(str(topo_id))
 
     def _write_as_topo(self, topo_id, _as_conf):
-        path = os.path.join(topo_id.base_dir(self.args.output_dir), TOPO_FILE)
+        # Full BR topo (union of all memberships) in AS root
+        as_root = topo_id.base_dir(self.args.output_dir)
+        path = os.path.join(as_root, TOPO_FILE)
         contents_json = json.dumps(self.topo_dicts[topo_id],
                                    default=json_default, indent=2)
         write_file(path, contents_json + '\n')
+        # Per-membership trimmed topo for CS/SD
+        local_ias = self.topo_dicts[topo_id].get('local_ias', [str(topo_id)])
+        mem_dirs = self.membership_base_dirs.get(str(topo_id), {})
+        for ia_str in local_ias:
+            mem_id = TopoID(ia_str)
+            base_dir = mem_dirs.get(ia_str, os.path.join(as_root, f"isd{mem_id.isd_str()}"))
+            os.makedirs(base_dir, exist_ok=True)
+            trimmed = self._trim_topo_for_membership(self.topo_dicts[topo_id], ia_str)
+            default_mem_path = os.path.join(base_dir, TOPO_FILE)
+            write_file(default_mem_path, json.dumps(trimmed, default=json_default, indent=2) + '\n')
+
+    def _trim_topo_for_membership(self, full_topo, ia_str):
+        topo = dict(full_topo)
+        topo['isd_as'] = ia_str
+        # A membership-specific topology only advertises that single IA locally.
+        topo['local_ias'] = [ia_str]
+        topo['border_routers'] = {}
+        # Keep only interfaces that point to ia_str
+        base_isd = int(full_topo.get('isd_as', ia_str).split("-")[0])
+        for br, br_conf in full_topo.get('border_routers', {}).items():
+            intfs = {}
+            for ifid, intf in br_conf.get('interfaces', {}).items():
+                mem_isd = ia_str.split("-")[0]
+                priv_list = intf.get('private_isds', [])
+                allow = False
+                if not priv_list:
+                    # Unannotated interfaces belong to the base/public membership only.
+                    allow = int(mem_isd) == base_isd
+                else:
+                    # Only keep interfaces that explicitly list this membership and whose remote ISD matches.
+                    if int(mem_isd) in priv_list:
+                        remote_isd = int(str(intf.get('isd_as', '')).split("-")[0])
+                        allow = remote_isd == int(mem_isd)
+                if allow:
+                    intfs[ifid] = intf
+            if intfs:
+                topo['border_routers'][br] = dict(br_conf)
+                topo['border_routers'][br]['interfaces'] = intfs
+        # Keep only control/discovery entries belonging to ia_str
+        for key in ('control_service', 'discovery_service'):
+            kept = {}
+            for name, entry in full_topo.get(key, {}).items():
+                if entry.get('isd_as', full_topo.get('isd_as')) == ia_str:
+                    kept[name] = entry
+            topo[key] = kept
+        return topo
 
     def _write_as_list(self):
         list_path = os.path.join(self.args.output_dir, AS_LIST_FILE)

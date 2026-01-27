@@ -35,6 +35,7 @@ from topology.common import (
     SD_API_PORT,
     SD_CONFIG_NAME,
 )
+from topology.common import TopoID
 
 from topology.net import socket_address_str, NetworkDescription, IPNetwork
 
@@ -98,14 +99,15 @@ class GoGenerator(object):
     def generate_control_service(self):
         for topo_id, topo in self.args.topo_dicts.items():
             ca = self.args.config["ASes"][str(topo_id)].get("issuing", False)
+            mem_dirs = topo.get("membership_base_dirs", {})
             for elem_id, elem in topo.get("control_service", {}).items():
-                # only a single Go-BS per AS is currently supported
-                if elem_id.endswith("-1"):
-                    base = topo_id.base_dir(self.args.output_dir)
-                    bs_conf = self._build_control_service_conf(
-                        topo_id, topo["isd_as"], base, elem_id, elem, ca)
-                    write_file(os.path.join(base, "%s.toml" % elem_id),
-                               toml.dumps(bs_conf))
+                mem_id = TopoID(elem.get("isd_as", topo["isd_as"]))
+                base = mem_dirs.get(str(mem_id), os.path.join(topo_id.base_dir(self.args.output_dir),
+                                                              f"isd{mem_id.isd_str()}"))
+                bs_conf = self._build_control_service_conf(
+                    mem_id, elem.get("isd_as", topo["isd_as"]), base, elem_id, elem, ca)
+                write_file(os.path.join(base, "%s.toml" % elem_id),
+                           toml.dumps(bs_conf))
 
     def _build_control_service_conf(self, topo_id, ia, base, name, infra_elem, ca):
         config_dir = '/etc/scion' if self.args.docker else base
@@ -135,9 +137,15 @@ class GoGenerator(object):
 
     def generate_sciond(self):
         for topo_id, topo in self.args.topo_dicts.items():
-            base = topo_id.base_dir(self.args.output_dir)
-            sciond_conf = self._build_sciond_conf(topo_id, topo["isd_as"], base)
-            write_file(os.path.join(base, SD_CONFIG_NAME), toml.dumps(sciond_conf))
+            local_ias = topo.get("local_ias", [str(topo_id)])
+            mem_dirs = topo.get("membership_base_dirs", {})
+            for ia_str in local_ias:
+                mem_id = TopoID(ia_str)
+                base = mem_dirs.get(ia_str, os.path.join(topo_id.base_dir(self.args.output_dir),
+                                                         f"isd{mem_id.isd_str()}"))
+                sciond_conf = self._build_sciond_conf(mem_id, ia_str, base)
+                sd_name = f"sd.{mem_id.file_fmt()}.toml"
+                write_file(os.path.join(base, sd_name), toml.dumps(sciond_conf))
 
     def _build_sciond_conf(self, topo_id, ia, base):
         name = sciond_name(topo_id)

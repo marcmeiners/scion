@@ -107,10 +107,10 @@ class ConfigGenerator(object):
         seen = set()
         for asStr in self.topo_config["ASes"]:
             ia = ISD_AS(asStr)
-            if ia.as_str() in seen:
-                logging.critical("Non-unique AS Id '%s'", ia.as_str())
+            if str(ia) in seen:
+                logging.critical("Non-unique ISD-AS '%s'", str(ia))
                 sys.exit(1)
-            seen.add(ia.as_str())
+            seen.add(str(ia))
 
     def _canonicalize_isd_asns(self):
         canonicalized = {}

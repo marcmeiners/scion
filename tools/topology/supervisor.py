@@ -22,12 +22,15 @@ import os
 import shlex
 from io import StringIO
 
+import toml
+
 # SCION
 from topology.util import write_file
 from topology.common import (
     ArgsTopoDicts,
     DISP_CONFIG_NAME,
     SD_CONFIG_NAME,
+    TopoID,
 )
 
 SUPERVISOR_CONF = 'supervisord.conf'
@@ -67,7 +70,7 @@ class SupervisorGenerator(object):
         entries = []
         entries.extend(self._br_entries(topo, "bin/router", base))
         entries.extend(self._control_service_entries(topo, base))
-        entries.append(self._sciond_entry(topo_id, base))
+        entries.extend(self._sciond_entries(topo_id, topo))
         return entries
 
     def _br_entries(self, topo, cmd, base):
@@ -82,20 +85,56 @@ class SupervisorGenerator(object):
     def _control_service_entries(self, topo, base):
         entries = []
         for k, v in topo.get("control_service", {}).items():
-            # only a single control service instance per AS is currently supported
-            if k.endswith("-1"):
-                conf = os.path.join(base, "%s.toml" % k)
+            ia_str = v.get("isd_as")
+            if ia_str:
+                mem_base = topo.get("membership_base_dirs", {}).get(ia_str, self._as_base_from_ia(ia_str))
+                conf = os.path.join(mem_base, "%s.toml" % k)
+                # For membership control services, point at their membership sciond/topology.
+                sd_path = os.path.join(mem_base, f"sd.{TopoID(ia_str).file_fmt()}.toml")
+                sd_addr = self._sd_address(sd_path)
+                env = f'SCION_SD_CONFIG="{sd_path}"'
+                if sd_addr:
+                    env += f',SCION_DAEMON_ADDRESS="{sd_addr}"'
                 prog = self._common_entry(k, ["bin/control", "--config", conf])
-                entries.append((k, prog))
+                prog['environment'] += f",{env}"
+            else:
+                conf = os.path.join(base, "%s.toml" % k)
+                sd_path = os.path.join(base, f"sd.{TopoID(str(topo.get('isd_as', ''))).file_fmt()}.toml")
+                sd_addr = self._sd_address(sd_path) if os.path.exists(sd_path) else None
+                prog = self._common_entry(k, ["bin/control", "--config", conf])
+                if sd_addr:
+                    prog['environment'] += f',SCION_DAEMON_ADDRESS="{sd_addr}"'
+            entries.append((k, prog))
         return entries
 
-    def _sciond_entry(self, topo_id, conf_dir):
-        sd_name = "sd%s" % topo_id.file_fmt()
-        cmd_args = [
-            "bin/daemon", "--config",
-            os.path.join(conf_dir, SD_CONFIG_NAME)
-        ]
-        return (sd_name, self._common_entry(sd_name, cmd_args))
+    def _sd_address(self, sd_conf_path):
+        try:
+            data = toml.load(sd_conf_path)
+            return data.get("sd", {}).get("address", "")
+        except Exception:
+            return ""
+
+    def _sciond_entries(self, topo_id, topo):
+        entries = []
+        mem_dirs = topo.get("membership_base_dirs", {})
+        for ia_str in topo.get("local_ias", [str(topo_id)]):
+            mem_id = topo_id if ia_str == str(topo_id) else topo_id.__class__(ia_str)
+            sd_name = f"sd.{mem_id.file_fmt()}"
+            conf_dir = mem_dirs.get(ia_str, mem_id.base_dir(self.args.output_dir))
+            sd_file = f"sd.{mem_id.file_fmt()}.toml"
+            cmd_args = [
+                "bin/daemon", "--config",
+                os.path.join(conf_dir, sd_file)
+            ]
+            prog = self._common_entry(sd_name, cmd_args)
+            entries.append((sd_name, prog))
+        return entries
+
+    def _as_base_from_ia(self, ia_str):
+        # ia_str is e.g. "25-ff00:0:220"
+        from topology.common import TopoID
+        mem_id = TopoID(ia_str)
+        return mem_id.base_dir(self.args.output_dir)
 
     def _add_dispatcher(self, config):
         name, entry = self._dispatcher_entry()
