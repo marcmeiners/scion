@@ -87,7 +87,7 @@ func (c *Connector) AddInternalInterface(
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	log.Debug("Adding internal interface", "isd_as", ia, "local", localAddr)
-	if !c.ia.Equal(ia) {
+	if c.ia.AS() != ia.AS() {
 		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", ia)
 	}
 	c.internalInterfaces = append(c.internalInterfaces, control.InternalInterface{
@@ -113,7 +113,7 @@ func (c *Connector) AddExternalInterface(
 		"link_bfd_enabled", link.BFD.Disable == nil || !*link.BFD.Disable,
 		"dataplane_bfd_enabled", !c.BFD.Disable)
 
-	if !c.ia.Equal(link.Local.IA) {
+	if c.ia.AS() != link.Local.IA.AS() {
 		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", link.Local.IA)
 	}
 	if err := c.DataPlane.AddNeighborIA(intf, link.Remote.IA); err != nil {
@@ -174,13 +174,13 @@ func (c *Connector) SetKey(ia addr.IA, index int, key []byte) error {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	log.Debug("Setting key", "isd_as", ia, "index", index)
-	if !c.ia.Equal(ia) {
+	if c.ia.AS() != ia.AS() {
 		return serrors.JoinNoStack(errMultiIA, nil, "current", c.ia, "new", ia)
 	}
 	if index != 0 {
 		return serrors.New("currently only index 0 key is supported")
 	}
-	return c.DataPlane.SetKey(key)
+	return c.DataPlane.SetKey(ia, key)
 }
 
 func (c *Connector) ListInternalInterfaces() ([]control.InternalInterface, error) {

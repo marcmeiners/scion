@@ -56,13 +56,22 @@ class CertGenerator(object):
     def _master_keys(self, topo_dicts):
         for topo_id in topo_dicts:
             membership_dirs = topo_dicts[topo_id].get('membership_base_dirs', {})
-            targets = [topo_id.base_dir(self.args.output_dir)] + list(membership_dirs.values())
-            # Use the same forwarding keys for all memberships of this AS.
-            key0 = base64.b64encode(os.urandom(16)).decode()
-            key1 = base64.b64encode(os.urandom(16)).decode()
-            for target in targets:
-                write_file(os.path.join(target, 'keys', 'master0.key'), key0)
-                write_file(os.path.join(target, 'keys', 'master1.key'), key1)
+            root_dir = topo_id.base_dir(self.args.output_dir)
+            root_key0 = base64.b64encode(os.urandom(16)).decode()
+            root_key1 = base64.b64encode(os.urandom(16)).decode()
+            write_file(os.path.join(root_dir, 'keys', 'master0.key'), root_key0)
+            write_file(os.path.join(root_dir, 'keys', 'master1.key'), root_key1)
+
+            for ia_str, mem_dir in membership_dirs.items():
+                # public/base membership (same IA as topo_id) reuses the base keys
+                if ia_str == str(topo_id):
+                    key0, key1 = root_key0, root_key1
+                # private memberships get their own random keys
+                else:
+                    key0 = base64.b64encode(os.urandom(16)).decode()
+                    key1 = base64.b64encode(os.urandom(16)).decode()
+                write_file(os.path.join(mem_dir, 'keys', 'master0.key'), key0)
+                write_file(os.path.join(mem_dir, 'keys', 'master1.key'), key1)
 
     def _copy_files(self, topo_dicts):
         cp = local['cp']

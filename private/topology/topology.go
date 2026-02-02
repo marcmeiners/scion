@@ -67,6 +67,8 @@ type (
 		IsCore              bool
 		MTU                 int
 		PrivateOnlyAS       bool
+		LocalIAs            []addr.IA
+		MembershipBaseDirs  map[string]string
 		DispatchedPortStart uint16
 		DispatchedPortEnd   uint16
 		PrivateISDs         []PrivateISDMembership
@@ -281,6 +283,25 @@ func (t *RWTopology) populateMeta(raw *jsontopo.Topology) error {
 	} else {
 		t.PrivateISDs = nil
 	}
+	// Record local IAs (base + memberships) and membership base dirs if present.
+	if len(raw.LocalIAs) > 0 {
+		ias := make([]addr.IA, 0, len(raw.LocalIAs))
+		for _, s := range raw.LocalIAs {
+			ia, err := addr.ParseIA(s)
+			if err != nil {
+				return serrors.Wrap("parsing local IA", err, "value", s)
+			}
+			ias = append(ias, ia)
+		}
+		t.LocalIAs = ias
+	}
+	if len(raw.MembershipBaseDirs) > 0 {
+		mbd := make(map[string]string, len(raw.MembershipBaseDirs))
+		for k, v := range raw.MembershipBaseDirs {
+			mbd[k] = v
+		}
+		t.MembershipBaseDirs = mbd
+	}
 	return nil
 }
 
@@ -493,6 +514,8 @@ func (t *RWTopology) Copy() *RWTopology {
 		DispatchedPortStart: t.DispatchedPortStart,
 		DispatchedPortEnd:   t.DispatchedPortEnd,
 		PrivateISDs:         copyPrivateMemberships(t.PrivateISDs),
+		LocalIAs:            append([]addr.IA{}, t.LocalIAs...),
+		MembershipBaseDirs:  copyStringMap(t.MembershipBaseDirs),
 
 		BR:        copyBRMap(t.BR),
 		IFInfoMap: t.IFInfoMap.copy(),
@@ -760,4 +783,15 @@ func copyUDPAddr(a *net.UDPAddr) *net.UDPAddr {
 		Port: a.Port,
 		Zone: a.Zone,
 	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

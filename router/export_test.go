@@ -199,7 +199,7 @@ func mustMakeDP(
 		}
 	}
 
-	if err := dp.SetKey(key); err != nil {
+	if err := dp.SetKey(local, key); err != nil {
 		panic(err)
 	}
 

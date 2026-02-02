@@ -19,14 +19,17 @@ package control
 import (
 	"crypto/sha256"
 	"net/netip"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/scionproto/scion/pkg/addr"
+	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/segment/iface"
+	"github.com/scionproto/scion/private/keyconf"
 	"github.com/scionproto/scion/private/topology"
 )
 
@@ -137,6 +140,31 @@ func ConfigDataplane(dp Dataplane, cfg *Config) error {
 		key0 := DeriveHFMacKey(cfg.MasterKeys.Key0)
 		if err := dp.SetKey(cfg.IA, 0, key0); err != nil {
 			return err
+		}
+	}
+	// Load membership-specific keys if present.
+	if topoIAs := cfg.Topo.LocalIAs(); len(topoIAs) > 0 {
+		for _, ia := range topoIAs {
+			if ia.Equal(cfg.IA) {
+				continue
+			}
+			baseDirs := cfg.Topo.MembershipBaseDirs()
+			confDir, ok := baseDirs[ia.String()]
+			if !ok {
+				// fall back to same dir layout as base if missing
+				continue
+			}
+			mk, err := keyconf.LoadMaster(filepath.Join(confDir, "keys"))
+			if err != nil {
+				log.Debug("Skipping membership keys", "ia", ia, "err", err)
+				continue
+			}
+			if len(mk.Key0) > 0 {
+				key0 := DeriveHFMacKey(mk.Key0)
+				if err := dp.SetKey(ia, 0, key0); err != nil {
+					return err
+				}
+			}
 		}
 	}
 

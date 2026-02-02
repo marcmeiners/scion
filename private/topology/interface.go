@@ -87,6 +87,11 @@ type Topology interface {
 	// XXX(scrye): Return value is a shallow copy.
 	SVCNames(svc addr.SVC) ServiceNames
 
+	// LocalIAs returns the list of IAs that this AS serves locally.
+	LocalIAs() []addr.IA
+	// MembershipBaseDirs returns the mapping IA -> base directory for its membership config.
+	MembershipBaseDirs() map[string]string
+
 	// Writable returns a pointer to the underlying topology object. This is included for legacy
 	// reasons and should never be used.
 	//
@@ -359,6 +364,14 @@ func (t *topologyS) SVCNames(svc addr.SVC) ServiceNames {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (t *topologyS) LocalIAs() []addr.IA {
+	return append([]addr.IA{}, t.Topology.LocalIAs...)
+}
+
+func (t *topologyS) MembershipBaseDirs() map[string]string {
+	return copyStringMap(t.Topology.MembershipBaseDirs)
 }
 
 func (t *topologyS) Writable() *RWTopology {

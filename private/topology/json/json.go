@@ -118,12 +118,14 @@ func (p *PrivateISD) UnmarshalJSON(b []byte) error {
 
 // Topology is the JSON type for the entire AS topology file.
 type Topology struct {
-	Timestamp        int64  `json:"timestamp,omitempty"`
-	TimestampHuman   string `json:"timestamp_human,omitempty"`
-	IA               string `json:"isd_as"`
-	MTU              int    `json:"mtu"`
-	EndhostPortRange string `json:"dispatched_ports"`
-	PrivateOnlyAS    bool   `json:"private_only_as,omitempty"`
+	Timestamp          int64             `json:"timestamp,omitempty"`
+	TimestampHuman     string            `json:"timestamp_human,omitempty"`
+	IA                 string            `json:"isd_as"`
+	MTU                int               `json:"mtu"`
+	EndhostPortRange   string            `json:"dispatched_ports"`
+	PrivateOnlyAS      bool              `json:"private_only_as,omitempty"`
+	LocalIAs           []string          `json:"local_ias,omitempty"`
+	MembershipBaseDirs map[string]string `json:"membership_base_dirs,omitempty"`
 	// Attributes specify whether this is a core AS or not.
 	Attributes Attributes `json:"attributes"`
 	// PrivateISDs lists the private ISDs the AS participates in with optional role overrides.

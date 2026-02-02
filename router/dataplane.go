@@ -224,6 +224,7 @@ type dataPlane struct {
 	linkTypes           [math.MaxUint16 + 1]topology.LinkType
 	neighborIAs         [math.MaxUint16 + 1]addr.IA
 	localHost           addr.Host
+	macFactories        map[addr.ISD]func() hash.Hash
 	macFactory          func() hash.Hash
 	localIA             addr.IA
 	mtx                 sync.Mutex
@@ -379,13 +380,22 @@ func (d *dataPlane) SetIA(ia addr.IA) error {
 	return nil
 }
 
+func (d *dataPlane) getMACFactory(isd addr.ISD) func() hash.Hash {
+	if d.macFactories != nil {
+		if factory, ok := d.macFactories[isd]; ok {
+			return factory
+		}
+	}
+	return d.macFactory
+}
+
 func (d *dataPlane) sameAS(ia addr.IA) bool {
 	return d.localIA.AS() == ia.AS()
 }
 
-// SetKey sets the key used for MAC verification. The key provided here should
+// SetKey sets the MAC key for the given IA (per-ISD). The key provided here should
 // already be derived as in scrypto.HFMacFactory.
-func (d *dataPlane) SetKey(key []byte) error {
+func (d *dataPlane) SetKey(ia addr.IA, key []byte) error {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
 	if d.isRunning() {
@@ -394,16 +404,22 @@ func (d *dataPlane) SetKey(key []byte) error {
 	if len(key) == 0 {
 		return errEmptyValue
 	}
-	if d.macFactory != nil {
-		return errAlreadySet
+	if d.macFactories == nil {
+		d.macFactories = make(map[addr.ISD]func() hash.Hash)
 	}
+	log.Debug("Installing MAC key", "isd", ia.ISD())
 	// First check for MAC creation errors.
 	if _, err := scrypto.InitMac(key); err != nil {
 		return err
 	}
-	d.macFactory = func() hash.Hash {
+	factory := func() hash.Hash {
 		mac, _ := scrypto.InitMac(key)
 		return mac
+	}
+	d.macFactories[ia.ISD()] = factory
+	// Public membership MacFactory
+	if d.macFactory == nil && ia.ISD() == d.localIA.ISD() {
+		d.macFactory = factory
 	}
 	return nil
 }
@@ -1476,7 +1492,9 @@ func (p *scionPacketProcessor) currentHopPointer() uint16 {
 }
 
 func (p *scionPacketProcessor) verifyCurrentMAC() disposition {
-	fullMac := path.FullMAC(p.mac, p.infoField, p.hopField, p.macInputBuffer[:path.MACBufferSize])
+	macFactory := p.d.getMACFactory(p.scionLayer.DstIA.ISD())
+	mac := macFactory()
+	fullMac := path.FullMAC(mac, p.infoField, p.hopField, p.macInputBuffer[:path.MACBufferSize])
 	if subtle.ConstantTimeCompare(p.hopField.Mac[:path.MacLen], fullMac[:path.MacLen]) == 0 {
 		log.Debug("SCMP response", "cause", errMacVerificationFailed,
 			"expected", fullMac[:path.MacLen],
@@ -1862,7 +1880,12 @@ func (p *scionPacketProcessor) processOHP() disposition {
 		if !neighborIA.Equal(s.DstIA) {
 			return errorDiscard("error", errCannotRoute)
 		}
-		mac := path.MAC(p.mac, ohp.Info, ohp.FirstHop, p.macInputBuffer[:path.MACBufferSize])
+		// For outgoing OHP packets we sign with the MAC derived from the local
+		// membership ISD (source IA), not the destination.
+		macFactory := p.d.getMACFactory(p.scionLayer.SrcIA.ISD())
+		macFunc := macFactory()
+		mac := path.MAC(macFunc, ohp.Info, ohp.FirstHop,
+			p.macInputBuffer[:path.MACBufferSize])
 		if subtle.ConstantTimeCompare(ohp.FirstHop.Mac[:], mac[:]) == 0 {
 			// TODO parameter problem -> invalid MAC
 			return errorDiscard("error", errMacVerificationFailed)
@@ -1892,7 +1915,9 @@ func (p *scionPacketProcessor) processOHP() disposition {
 	// XXX(roosd): Here we leak the buffer into the SCION packet header.
 	// This is okay because we do not operate on the buffer or the packet
 	// for the rest of processing.
-	ohp.SecondHop.Mac = path.MAC(p.mac, ohp.Info, ohp.SecondHop,
+	macFactory := p.d.getMACFactory(p.scionLayer.DstIA.ISD())
+	mac := macFactory()
+	ohp.SecondHop.Mac = path.MAC(mac, ohp.Info, ohp.SecondHop,
 		p.macInputBuffer[:path.MACBufferSize])
 
 	if err := updateSCIONLayer(p.pkt.RawPacket, s); err != nil {

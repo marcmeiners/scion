@@ -87,21 +87,21 @@ func TestDataPlaneSetKey(t *testing.T) {
 	t.Run("fails after serve", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
 		d.MockStart()
-		assert.Error(t, d.SetKey([]byte("dummy")))
+		assert.Error(t, d.SetKey(addr.MustIAFrom(1, 0x1), []byte("dummy")))
 	})
 	t.Run("setting nil value is not allowed", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
 		d.MockStart()
-		assert.Error(t, d.SetKey(nil))
+		assert.Error(t, d.SetKey(addr.MustIAFrom(1, 0x1), nil))
 	})
 	t.Run("single set works", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
-		assert.NoError(t, d.SetKey([]byte("dummy key xxxxxx")))
+		assert.NoError(t, d.SetKey(addr.MustIAFrom(1, 0x1), []byte("dummy key xxxxxx")))
 	})
 	t.Run("double set fails", func(t *testing.T) {
 		d := router.NewDPRaw(router.RunConfig{}, false)
-		assert.NoError(t, d.SetKey([]byte("dummy key xxxxxx")))
-		assert.Error(t, d.SetKey([]byte("dummy key xxxxxx")))
+		assert.NoError(t, d.SetKey(addr.MustIAFrom(1, 0x1), []byte("dummy key xxxxxx")))
+		assert.Error(t, d.SetKey(addr.MustIAFrom(1, 0x1), []byte("dummy key xxxxxx")))
 	})
 }
 
@@ -423,7 +423,7 @@ func TestDataPlaneRun(t *testing.T) {
 				assert.NoError(t, ret.AddExternalInterface(1, link, lh, rh))
 
 				assert.NoError(t, ret.SetIA(local))
-				assert.NoError(t, ret.SetKey(key))
+				assert.NoError(t, ret.SetKey(local, key))
 				return ret
 			},
 		},
@@ -457,7 +457,7 @@ func TestDataPlaneRun(t *testing.T) {
 						gopacket.SerializeOptions{FixLengths: true}, scn, bfdL))
 					return buffer.Bytes()
 				}
-				assert.NoError(t, ret.SetKey([]byte("randomkeyformacs")))
+				assert.NoError(t, ret.SetKey(addr.MustIAFrom(1, 0x1), []byte("randomkeyformacs")))
 
 				// We don't care what happens on the internal connection. Sink it.
 				mInternal := mock_router.NewMockBatchConn(ctrl)
@@ -608,7 +608,7 @@ func TestDataPlaneRun(t *testing.T) {
 					}).MinTimes(1)
 				mInternal.EXPECT().ReadBatch(gomock.Any()).Return(0, nil).AnyTimes()
 
-				assert.NoError(t, ret.SetKey([]byte("randomkeyformacs")))
+				assert.NoError(t, ret.SetKey(addr.MustIAFrom(1, 0x1), []byte("randomkeyformacs")))
 				// Let the same connection be used for internal and sibling. We only send on the
 				// latter and we don't care what we receive or where.
 				ret.SetConnOpener("udpip", router.MockConnOpener{Ctrl: ctrl, Conn: mInternal})
@@ -681,7 +681,7 @@ func TestDataPlaneRun(t *testing.T) {
 					BFD:      bfd(),
 				}
 
-				assert.NoError(t, ret.SetKey([]byte("randomkeyformacs")))
+				assert.NoError(t, ret.SetKey(addr.MustIAFrom(1, 0x1), []byte("randomkeyformacs")))
 				ret.SetConnOpener("udpip", router.MockConnOpener{Ctrl: ctrl, Conn: mInternal})
 				assert.NoError(t, ret.AddInternalInterface(addr.Host{}, "udpip", "127.0.0.1:0"))
 				ret.SetConnOpener("udpip", router.MockConnOpener{Ctrl: ctrl, Conn: mExternal})
@@ -776,7 +776,7 @@ func TestDataPlaneRun(t *testing.T) {
 					BFD:      bfd(),
 				}
 
-				assert.NoError(t, ret.SetKey([]byte("randomkeyformacs")))
+				assert.NoError(t, ret.SetKey(addr.MustIAFrom(1, 0x1), []byte("randomkeyformacs")))
 				ret.SetConnOpener("udpip", router.MockConnOpener{Ctrl: ctrl, Conn: mInternal})
 				assert.NoError(t, ret.AddInternalInterface(addr.Host{}, "udpip", "127.0.0.1:0"))
 				ret.SetConnOpener("udpip", router.MockConnOpener{Ctrl: ctrl, Conn: mExternal})
