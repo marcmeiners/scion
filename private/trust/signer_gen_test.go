@@ -52,12 +52,19 @@ func TestSignerGenGenerate(t *testing.T) {
 	// create a new certificate for AS 110:
 	var buf bytes.Buffer
 	cmd := certs.Cmd(command.StringPather(""))
+	templateFile := filepath.Join(
+		dir,
+		"ISD1/ASff00_0_110/crypto/as",
+		fmt.Sprintf("cp-as.%s.tmpl",
+			addr.FormatIA(addr.MustParseIA("1-ff00:0:110"),
+				addr.WithFileSeparator(), addr.WithDefaultPrefix())),
+	)
 	cmd.SetArgs([]string{
 		"create",
 		"--ca", filepath.Join(dir, "ISD1/ASff00_0_110/crypto/ca/ISD1-ASff00_0_110.ca.crt"),
 		"--ca-key", filepath.Join(dir, "ISD1/ASff00_0_110/crypto/ca/cp-ca.key"),
 		"--bundle",
-		filepath.Join(dir, "ISD1/ASff00_0_110/crypto/as/cp-as.tmpl"),
+		templateFile,
 		filepath.Join(dir, "certs/ISD1-ASff00_0_110-2.pem"),
 		filepath.Join(dir, "ISD1/ASff00_0_110/crypto/as/cp-as-2.key"),
 	})
