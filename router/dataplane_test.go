@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash"
 	"net"
 	"net/netip"
 	"sync"
@@ -1738,6 +1739,83 @@ func TestProcessPkt(t *testing.T) {
 			assertPktEqual(t, want, pkt)
 		})
 	}
+}
+
+func TestMembershipMACIsolation(t *testing.T) {
+	now := time.Now()
+
+	const (
+		publicISD              = addr.ISD(1)
+		privateISD             = addr.ISD(25)
+		hopFieldDefaultExpTime = 63
+	)
+	baseKey := []byte("testkey_base____")
+
+	kd, err := scrypto.NewMembershipKeyDerivation(baseKey)
+	require.NoError(t, err)
+
+	newDP := func() *router.DataPlane {
+		return router.NewDP(
+			// interface 1
+			[]uint16{1},
+			nil,
+			nil,
+			map[uint16]netip.AddrPort{},
+			addr.MustParseIA("1-ff00:0:110"),
+			nil,
+			baseKey,
+		)
+	}
+
+	buildPkt := func(dstIA addr.IA, macFactory func() hash.Hash) *router.Packet {
+		spkt, dpath := prepBaseMsg(now)
+		spkt.DstIA = dstIA
+		require.NoError(t, spkt.SetDstAddr(addr.MustParseHost("10.0.100.100")))
+		dpath.HopFields = []path.HopField{
+			{ConsIngress: 41, ConsEgress: 40, ExpTime: hopFieldDefaultExpTime},
+			{ConsIngress: 31, ConsEgress: 30, ExpTime: hopFieldDefaultExpTime},
+			// this hop field is checked later on, it is the ingress to AS 110
+			{ConsIngress: 1, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime},
+		}
+		dpath.Base.PathMeta.CurrHF = 2
+		// set the MAC for our hop field of interest
+		dpath.HopFields[2].Mac = path.MAC(macFactory(), dpath.InfoFields[0], dpath.HopFields[2], nil)
+		return router.NewPacket(toBytes(t, spkt, dpath), nil, nil, 1, 0)
+	}
+
+	// send packet to private membership with hopfield signed using private membership forwarding key -> should not be dropped
+	t.Run("accepts matching membership MAC", func(t *testing.T) {
+		t.Parallel()
+
+		dp := newDP()
+		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
+		require.NoError(t, dp.SetMembershipKeys(kd, []addr.ISD{privateISD}))
+		macKey, err := kd.DeriveKey(privateISD)
+		require.NoError(t, err)
+
+		macFactory, err := scrypto.HFMacFactory(macKey)
+		require.NoError(t, err)
+
+		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("25-ff00:0:110"), macFactory))
+		// Check if no MAC failure
+		require.NotEqual(t, router.PSlowPath, disp)
+	})
+
+	// send packet to private membership with hopfield signed using public membership forwarding key -> should be dropped
+	t.Run("rejects mismatched membership MAC", func(t *testing.T) {
+		t.Parallel()
+
+		dp := newDP()
+		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
+		require.NoError(t, dp.SetMembershipKeys(kd, []addr.ISD{privateISD}))
+
+		macFactory, err := scrypto.HFMacFactory(baseKey)
+		require.NoError(t, err)
+
+		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("25-ff00:0:110"), macFactory))
+		//Check if we have a MAC failure
+		require.Equal(t, router.PSlowPath, disp)
+	})
 }
 
 func assertPktEqual(t *testing.T, a, b *router.Packet) {
