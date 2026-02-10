@@ -24,6 +24,11 @@ type PathQuerier interface {
 	Query(context.Context, addr.IA) ([]Path, error)
 }
 
+// Implementations should fall backto the default behaviour when options are zero-valued
+type PathQuerierWithOptions interface {
+	QueryOptions(context.Context, addr.IA, RouteOptions) ([]Path, error)
+}
+
 // Router performs path resolution for SCION-speaking applications.
 //
 // Most applications backed by SCIOND can use the default router implementation
@@ -39,6 +44,7 @@ type Router interface {
 
 type BaseRouter struct {
 	Querier PathQuerier
+	Options RouteOptions
 }
 
 // Route uses the specified path resolver (if one exists) to obtain a path from
@@ -53,5 +59,16 @@ func (r *BaseRouter) Route(ctx context.Context, dst addr.IA) (Path, error) {
 
 // AllRoutes is the same as Route except that it returns multiple paths.
 func (r *BaseRouter) AllRoutes(ctx context.Context, dst addr.IA) ([]Path, error) {
+	if q, ok := r.Querier.(PathQuerierWithOptions); ok {
+		return q.QueryOptions(ctx, dst, r.Options)
+	}
 	return r.Querier.Query(ctx, dst)
+}
+
+// RouteOptions influences path selection
+type RouteOptions struct {
+	// Specify ISD membership
+	Source addr.IA
+	// restrict selection to private paths
+	PrivateOnly bool
 }

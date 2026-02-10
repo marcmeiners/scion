@@ -44,9 +44,20 @@ type Querier struct {
 }
 
 func (q Querier) Query(ctx context.Context, dst addr.IA) ([]snet.Path, error) {
-	paths, err := q.Connector.Paths(ctx, dst, q.IA, PathReqFlags{})
+	return q.QueryOptions(ctx, dst, snet.RouteOptions{})
+}
+
+// QueryOptions allows selecting private memberships or limiting results to private paths.
+func (q Querier) QueryOptions(ctx context.Context, dst addr.IA, opts snet.RouteOptions) ([]snet.Path, error) {
+	src := q.IA
+	if opts.Source != 0 {
+		src = opts.Source
+	}
+	paths, err := q.Connector.Paths(ctx, dst, src, PathReqFlags{
+		PrivateOnly: opts.PrivateOnly,
+	})
 	if err != nil {
-		return paths, serrors.Wrap("querying paths", err, "local_isd_as", q.IA)
+		return paths, serrors.Wrap("querying paths", err, "local_isd_as", src)
 	}
 	return paths, nil
 }
