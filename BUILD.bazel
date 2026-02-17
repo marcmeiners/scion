@@ -170,6 +170,7 @@ pkg_tar(
         "//dispatcher/cmd/dispatcher",
         "//gateway/cmd/gateway",
         "//router/cmd/router",
+        "//demo/scion-chat",
         "//scion-pki/cmd/scion-pki",
         "//scion/cmd/scion",
         "//tools/pathdb_dump",
