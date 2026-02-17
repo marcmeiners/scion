@@ -265,15 +265,15 @@ func (p *Policy) InitDefaults() {
 		m := DefaultMaxExpTime
 		p.MaxExpTime = &m
 	}
-	for _, regPolicy := range p.RegistrationPolicies {
-		regPolicy.InitDefaults()
+	for i := range p.RegistrationPolicies {
+		p.RegistrationPolicies[i].InitDefaults()
 	}
 	p.Filter.InitDefaults()
 }
 
 func (p *Policy) Validate() error {
 	// Check that the policy does not have duplicate registration policy names.
-	for i := range len(p.RegistrationPolicies) {
+	for i := 0; i < len(p.RegistrationPolicies); i++ {
 		for j := i + 1; j < len(p.RegistrationPolicies); j++ {
 			if p.RegistrationPolicies[i].Name == p.RegistrationPolicies[j].Name {
 				return serrors.New("duplicate registration policy names found",

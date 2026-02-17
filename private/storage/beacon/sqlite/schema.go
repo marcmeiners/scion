@@ -18,7 +18,7 @@ const (
 	// SchemaVersion is the version of the SQLite schema understood by this backend.
 	// Whenever changes to the schema are made, this version number should be increased
 	// to prevent data corruption between incompatible database schemas.
-	SchemaVersion = 1
+	SchemaVersion = 2
 	// Schema is the SQLite database layout.
 	Schema = `CREATE TABLE Beacons(
 		RowID INTEGER PRIMARY KEY,
@@ -26,6 +26,7 @@ const (
 		FullID DATA UNIQUE NOT NULL,
 		StartIsd INTEGER NOT NULL,
 		StartAs INTEGER NOT NULL,
+		LocalIsd INTEGER NOT NULL,
 		InIntfID INTEGER NOT NULL,
 		HopsLength INTEGER NOT NULL,
 		InfoTime INTEGER NOT NULL,

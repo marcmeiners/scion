@@ -128,7 +128,7 @@ func testStoreSelection(t *testing.T,
 			require.NoError(t, err)
 
 			db.EXPECT().CandidateBeacons(
-				gomock.Any(), gomock.Any(), gomock.Any(), addr.IA(0),
+				gomock.Any(), gomock.Any(), gomock.Any(), addr.IA(0), addr.ISD(0),
 			).Return(
 				test.results, test.err,
 			)
@@ -247,12 +247,12 @@ func testCoreStoreSelection(t *testing.T,
 
 			db.EXPECT().BeaconSources(gomock.Any()).Return([]addr.IA{ia120, ia130}, nil)
 			db.EXPECT().CandidateBeacons(
-				gomock.Any(), gomock.Any(), gomock.Any(), ia120,
+				gomock.Any(), gomock.Any(), gomock.Any(), ia120, addr.ISD(0),
 			).Return(
 				test.results[ia120], nil,
 			)
 			db.EXPECT().CandidateBeacons(
-				gomock.Any(), gomock.Any(), gomock.Any(), ia130,
+				gomock.Any(), gomock.Any(), gomock.Any(), ia130, addr.ISD(0),
 			).Return(
 				test.results[ia130], nil,
 			)

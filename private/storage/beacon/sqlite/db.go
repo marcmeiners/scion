@@ -25,7 +25,6 @@ import (
 	"github.com/scionproto/scion/control/beacon"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/private/serrors"
-	"github.com/scionproto/scion/pkg/private/util"
 	"github.com/scionproto/scion/pkg/segment/iface"
 	storagebeacon "github.com/scionproto/scion/private/storage/beacon"
 	"github.com/scionproto/scion/private/storage/db"
@@ -115,6 +114,7 @@ func (e *executor) CandidateBeacons(
 	setSize int,
 	usage beacon.Usage,
 	src addr.IA,
+	localISD addr.ISD,
 ) ([]beacon.Beacon, error) {
 
 	e.RLock()
@@ -123,15 +123,19 @@ func (e *executor) CandidateBeacons(
 	if !src.IsZero() {
 		srcCond = `AND StartIsd == ?4 AND StartAs == ?5`
 	}
+	localISDCond := ``
+	if localISD != 0 {
+		localISDCond = `AND LocalIsd == ?3`
+	}
 	query := fmt.Sprintf(`
 		SELECT b.Beacon, b.InIntfID
 		FROM Beacons b
-		WHERE ( b.Usage & ?1 ) == ?1 %s
+		WHERE ( b.Usage & ?1 ) == ?2
+		%s %s
 		ORDER BY b.HopsLength ASC
-		LIMIT ?2
-	`, srcCond)
-	rows, err := e.db.QueryContext(ctx, query, usage, setSize, util.TimeToSecs(time.Now()),
-		src.ISD(), src.AS())
+		LIMIT ?6
+	`, localISDCond, srcCond)
+	rows, err := e.db.QueryContext(ctx, query, usage, usage, localISD, src.ISD(), src.AS(), setSize)
 	if err != nil {
 		return nil, db.NewReadError("Error selecting beacons", err)
 	}
@@ -357,11 +361,12 @@ func (e *executor) updateExistingBeacon(
 	infoTime := b.Segment.Info.Timestamp.Unix()
 	lastUpdated := now.UnixNano()
 	expTime := b.Segment.MaxExpiry().Unix()
+	localISD := localISDForBeacon(b)
 	inst := `UPDATE Beacons SET FullID=?, InIntfID=?, HopsLength=?, InfoTime=?,
-			ExpirationTime=?, LastUpdated=?, Usage=?, Beacon=?
+			ExpirationTime=?, LastUpdated=?, Usage=?, Beacon=?, LocalIsd=?
 			WHERE RowID=?`
 	_, err = e.db.ExecContext(ctx, inst, fullID, b.InIfID, len(b.Segment.ASEntries), infoTime,
-		expTime, lastUpdated, usage, packedSeg, rowID)
+		expTime, lastUpdated, usage, packedSeg, localISD, rowID)
 	if err != nil {
 		return db.NewWriteError("update segment", err)
 	}
@@ -383,22 +388,31 @@ func insertNewBeacon(
 		return db.NewInputDataError("pack segment", err)
 	}
 	start := b.Segment.FirstIA()
+	localISD := localISDForBeacon(b)
 	infoTime := b.Segment.Info.Timestamp.Unix()
 	lastUpdated := now.UnixNano()
 	expTime := b.Segment.MaxExpiry().Unix()
 
 	// Insert beacon.
 	inst := `
-	INSERT INTO Beacons (SegID, FullID, StartIsd, StartAs, InIntfID, HopsLength, InfoTime,
+	INSERT INTO Beacons (SegID, FullID, StartIsd, StartAs, LocalIsd, InIntfID, HopsLength, InfoTime,
 		ExpirationTime, LastUpdated, Usage, Beacon)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	_, err = tx.ExecContext(ctx, inst, segID, fullID, start.ISD(), start.AS(), b.InIfID,
+	_, err = tx.ExecContext(ctx, inst, segID, fullID, start.ISD(), start.AS(), localISD, b.InIfID,
 		len(b.Segment.ASEntries), infoTime, expTime, lastUpdated, usage, packed)
 	if err != nil {
 		return db.NewWriteError("insert beacon", err)
 	}
 	return nil
+}
+
+func localISDForBeacon(b beacon.Beacon) addr.ISD {
+	if b.Segment == nil || len(b.Segment.ASEntries) == 0 {
+		return 0
+	}
+	local := b.Segment.ASEntries[b.Segment.MaxIdx()].Next
+	return local.ISD()
 }
 
 func (e *executor) DeleteExpiredBeacons(ctx context.Context, now time.Time) (int, error) {

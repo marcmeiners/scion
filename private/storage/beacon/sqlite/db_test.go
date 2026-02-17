@@ -62,7 +62,7 @@ func TestOpenExisting(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 	defer cancelF()
-	res, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, 0)
+	res, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, 0, 0)
 	require.NoError(t, err)
 
 	beacondbtest.CheckResult(t, res, b)

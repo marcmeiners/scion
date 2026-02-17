@@ -151,14 +151,14 @@ func testInsertBeacon(t *testing.T, db beacon.DB) {
 	assert.Equal(t, exp, inserted)
 
 	// Fetch the candidate beacons
-	results, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, 0)
+	results, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, 0, 0)
 	require.NoError(t, err)
 
 	// There should only be one candidate beacon, and it should match the inserted.
 	CheckResult(t, results, b)
 	for _, usage := range []beacon.Usage{beacon.UsageUpReg, beacon.UsageDownReg,
 		beacon.UsageCoreReg} {
-		results, err = db.CandidateBeacons(ctx, 10, usage, 0)
+		results, err = db.CandidateBeacons(ctx, 10, usage, 0, 0)
 		assert.NoError(t, err)
 		assert.Empty(t, results)
 	}
@@ -188,14 +188,14 @@ func testUpdateExisting(t *testing.T, db beacon.DB) {
 	assert.Equal(t, exp, inserted)
 
 	// Fetch the candidate beacons
-	results, err := db.CandidateBeacons(ctx, 10, beacon.UsageDownReg, 0)
+	results, err := db.CandidateBeacons(ctx, 10, beacon.UsageDownReg, 0, 0)
 	require.NoError(t, err, "CandidateBeacons err")
 
 	// There should only be one candidate beacon, and it should match the inserted.
 	CheckResult(t, results, newB)
 	for _, usage := range []beacon.Usage{beacon.UsageUpReg, beacon.UsageProp,
 		beacon.UsageCoreReg} {
-		results, err = db.CandidateBeacons(ctx, 10, usage, 0)
+		results, err = db.CandidateBeacons(ctx, 10, usage, 0, 0)
 		assert.NoError(t, err)
 		assert.Empty(t, results)
 	}
@@ -224,13 +224,13 @@ func testUpdateOlderIgnored(t *testing.T, db beacon.DB) {
 	exp = beacon.InsertStats{Inserted: 0, Updated: 0}
 	assert.Equal(t, exp, inserted, "Inserted old")
 	// Fetch the candidate beacons
-	results, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, 0)
+	results, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, 0, 0)
 	require.NoError(t, err)
 	// There should only be one candidate beacon, and it should match the inserted.
 	CheckResult(t, results, newB)
 	for _, usage := range []beacon.Usage{beacon.UsageUpReg, beacon.UsageDownReg,
 		beacon.UsageCoreReg} {
-		results, err = db.CandidateBeacons(ctx, 10, usage, 0)
+		results, err = db.CandidateBeacons(ctx, 10, usage, 0, 0)
 		assert.NoError(t, err)
 		assert.Empty(t, results)
 	}
@@ -274,7 +274,7 @@ func testCandidateBeacons(t *testing.T, db Testable) {
 
 			db.Prepare(t, ctx)
 			test.PrepareDB(t, ctx, db)
-			results, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, test.Src)
+			results, err := db.CandidateBeacons(ctx, 10, beacon.UsageProp, test.Src, 0)
 			require.NoError(t, err)
 			CheckResults(t, results, test.Expected)
 		})

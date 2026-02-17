@@ -335,6 +335,7 @@ func realMain(ctx context.Context) error {
 			// used and we rather panic if they are reached due to a implementation
 			// bug.
 		},
+		topo.IA().ISD(),
 	)
 	if err != nil {
 		return serrors.Wrap("initializing beacon store", err)
@@ -375,6 +376,7 @@ func realMain(ctx context.Context) error {
 				DB:       trustDB,
 				Recurser: trust.NeverRecurser{},
 			},
+			ia.ISD(),
 		)
 		if err != nil {
 			return serrors.Wrap("initializing private beacon store", err, "isd", pm.ISD)
@@ -1843,7 +1845,11 @@ type multiBeaconInserter struct {
 	nonCorePolicies *beacon.Policies
 }
 
-func newMultiBeaconInserter(db beacon.DB, corePolicies *beacon.CorePolicies, nonCorePolicies *beacon.Policies) *multiBeaconInserter {
+func newMultiBeaconInserter(
+	db beacon.DB,
+	corePolicies *beacon.CorePolicies,
+	nonCorePolicies *beacon.Policies,
+) *multiBeaconInserter {
 	return &multiBeaconInserter{
 		db:              db,
 		corePolicies:    corePolicies,
@@ -1905,15 +1911,18 @@ func createBeaconStore(
 	policies loadedPolicies,
 	db storage.BeaconDB,
 	provider beacon.ChainProvider,
+	membershipISD addr.ISD,
 ) (cs.Store, bool, error) {
 	switch {
 	case policies.CorePolicies != nil:
 		policies := policies.CorePolicies
-		store, err := beacon.NewCoreBeaconStore(*policies, db, beacon.WithCheckChain(provider))
+		store, err := beacon.NewCoreBeaconStore(*policies, db,
+			beacon.WithCheckChain(provider), beacon.WithMembershipISD(membershipISD))
 		return store, *policies.Prop.Filter.AllowIsdLoop, err
 	case policies.NonCorePolicies != nil:
 		policies := policies.NonCorePolicies
-		store, err := beacon.NewBeaconStore(*policies, db, beacon.WithCheckChain(provider))
+		store, err := beacon.NewBeaconStore(*policies, db,
+			beacon.WithCheckChain(provider), beacon.WithMembershipISD(membershipISD))
 		return store, *policies.Prop.Filter.AllowIsdLoop, err
 	default:
 		return nil, false, serrors.New("no policies loaded")

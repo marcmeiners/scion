@@ -35,12 +35,13 @@ type InsertStats struct {
 type DB interface {
 	// CandidateBeacons returns up to `setSize` beacons that are allowed for the
 	// given usage. The beacons in the slice are ordered by segment length from
-	// shortest to longest.
+	// shortest to longest. A zero localISD disables membership-ISD filtering.
 	CandidateBeacons(
 		ctx context.Context,
 		setSize int,
 		usage Usage,
 		src addr.IA,
+		localISD addr.ISD,
 	) ([]Beacon, error)
 	// BeaconSources returns all source ISD-AS of the beacons in the database.
 	BeaconSources(ctx context.Context) ([]addr.IA, error)

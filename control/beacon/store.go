@@ -17,6 +17,7 @@ package beacon
 import (
 	"context"
 
+	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	seg "github.com/scionproto/scion/pkg/segment"
@@ -28,7 +29,8 @@ type usager interface {
 }
 
 type storeOptions struct {
-	chainChecker ChainProvider
+	chainChecker  ChainProvider
+	membershipISD addr.ISD
 }
 
 type StoreOption interface {
@@ -48,6 +50,17 @@ func (c chainCheckerOption) apply(o *storeOptions) {
 // trust store.
 func WithCheckChain(p ChainProvider) StoreOption {
 	return chainCheckerOption{p}
+}
+
+type membershipISDOption struct{ isd addr.ISD }
+
+func (o membershipISDOption) apply(opts *storeOptions) {
+	opts.membershipISD = o.isd
+}
+
+// WithMembershipISD scopes the store to the given ISD membership.
+func WithMembershipISD(isd addr.ISD) StoreOption {
+	return membershipISDOption{isd: isd}
 }
 
 func applyStoreOptions(opts []StoreOption) storeOptions {
@@ -116,6 +129,7 @@ func NewBeaconStore(policies Policies, db DB, opts ...StoreOption) (*Store, erro
 		baseStore: baseStore{
 			db:   db,
 			algo: selectAlgo(o),
+			isd:  o.membershipISD,
 		},
 		policies: policies,
 	}
@@ -156,7 +170,7 @@ func (s *Store) SegmentsToRegister(
 // best beacons according to the policy.
 func (s *Store) getBeacons(ctx context.Context, policy *Policy) ([]Beacon, error) {
 	beacons, err := s.db.CandidateBeacons(ctx, policy.CandidateSetSize,
-		UsageFromPolicyType(policy.Type), 0)
+		UsageFromPolicyType(policy.Type), 0, s.isd)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +210,7 @@ func NewCoreBeaconStore(policies CorePolicies, db DB, opts ...StoreOption) (*Cor
 		baseStore: baseStore{
 			db:   db,
 			algo: selectAlgo(o),
+			isd:  o.membershipISD,
 		},
 		policies: policies,
 	}
@@ -235,7 +250,7 @@ func (s *CoreStore) getBeacons(ctx context.Context, policy *Policy) ([]Beacon, e
 	var beacons []Beacon
 	for _, src := range srcs {
 		candidateBeacons, err := s.db.CandidateBeacons(ctx, policy.CandidateSetSize,
-			UsageFromPolicyType(policy.Type), src)
+			UsageFromPolicyType(policy.Type), src, s.isd)
 		// Must not return as a partial result is better than no result at all.
 		if err != nil {
 			log.FromCtx(ctx).Error("Error getting candidate beacons", "src", src, "err", err)
@@ -263,6 +278,7 @@ type baseStore struct {
 	db     DB
 	usager usager
 	algo   selectionAlgorithm
+	isd    addr.ISD
 }
 
 // PreFilter indicates whether the beacon will be filtered on insert by

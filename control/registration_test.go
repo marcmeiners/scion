@@ -162,7 +162,7 @@ func TestRetrieveGroupedBeacons(t *testing.T) {
 			// Create a mock database that returns the beacons.
 			db := mock_beacon.NewMockDB(mctrl)
 			db.EXPECT().CandidateBeacons(
-				gomock.Any(), gomock.Any(), gomock.Any(), addr.IA(0),
+				gomock.Any(), gomock.Any(), gomock.Any(), addr.IA(0), addr.ISD(0),
 			).Return(
 				beacons, nil,
 			)

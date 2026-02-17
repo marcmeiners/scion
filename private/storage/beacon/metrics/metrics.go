@@ -77,12 +77,13 @@ func (d *db) CandidateBeacons(
 	setSize int,
 	usage beacon.Usage,
 	src addr.IA,
+	localISD addr.ISD,
 ) ([]beacon.Beacon, error) {
 
 	var ret []beacon.Beacon
 	var err error
 	d.metrics.Observe(ctx, "candidate_beacons", func(ctx context.Context) (string, error) {
-		ret, err = d.db.CandidateBeacons(ctx, setSize, usage, src)
+		ret, err = d.db.CandidateBeacons(ctx, setSize, usage, src, localISD)
 		return dblib.ErrToMetricLabel(err), err
 	})
 	return ret, err
