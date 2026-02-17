@@ -40,6 +40,7 @@ go_test(
     srcs = [
         "beacon_test.go",
         "policy_test.go",
+        "store_isolation_test.go",
         "store_test.go",
     ],
     data = glob(["testdata/**"]),
