@@ -121,7 +121,10 @@ scion_go_binary(
 
 go_test(
     name = "go_default_test",
-    srcs = ["filter_membership_test.go"],
+    srcs = [
+        "filter_membership_test.go",
+        "tls_membership_test.go",
+    ],
     embed = [":go_default_library"],
     deps = [
         "//control/beaconing/ifstate:go_default_library",
