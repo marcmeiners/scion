@@ -1552,18 +1552,16 @@ func (m multiRegistrar) RegisterSegment(
 	return registrar.RegisterSegment(beaconing.ContextWithLocalIA(ctx, m.defaultIA), meta, remote)
 }
 
-// new lookuper that satisfies interface and allows us to do lookups for matching IA or ISD (AS value could be zero)
+// new lookuper that satisfies interface and does lookups based on source ISD or falls back to main (public) lookuper.
 // this lookuper can be used for both forward and auth lookup
 type membershipLookuper struct {
 	defaultIA addr.IA
-	byIA      map[addr.IA]segreqgrpc.Lookuper
 	byISD     map[addr.ISD]segreqgrpc.Lookuper
 }
 
 func newMembershipLookuper(defaultIA addr.IA) *membershipLookuper {
 	return &membershipLookuper{
 		defaultIA: defaultIA,
-		byIA:      make(map[addr.IA]segreqgrpc.Lookuper),
 		byISD:     make(map[addr.ISD]segreqgrpc.Lookuper),
 	}
 }
@@ -1572,7 +1570,6 @@ func (m *membershipLookuper) Add(local addr.IA, lookuper segreqgrpc.Lookuper) {
 	if lookuper == nil {
 		return
 	}
-	m.byIA[local] = lookuper
 	if _, exists := m.byISD[local.ISD()]; !exists {
 		m.byISD[local.ISD()] = lookuper
 	}
@@ -1582,27 +1579,16 @@ func (m *membershipLookuper) LookupSegments(
 	ctx context.Context,
 	src, dst addr.IA,
 ) (segfetcher.Segments, error) {
-	if lu := m.lookupByIA(src); lu != nil {
-		return lu.LookupSegments(ctx, src, dst)
-	}
-	// if there is no exact IA match, fall back to ISD-based lookuper
 	if lu := m.lookupByISD(src.ISD()); lu != nil {
 		return lu.LookupSegments(ctx, src, dst)
 	}
 	if m.defaultIA != 0 {
-		if lu := m.lookupByIA(m.defaultIA); lu != nil {
+		if lu := m.lookupByISD(m.defaultIA.ISD()); lu != nil {
 			return lu.LookupSegments(ctx, src, dst)
 		}
 	}
 	return nil, serrors.JoinNoStack(segfetcher.ErrInvalidRequest, nil,
 		"src", src, "dst", dst, "reason", "membership not served")
-}
-
-func (m *membershipLookuper) lookupByIA(local addr.IA) segreqgrpc.Lookuper {
-	if lu, ok := m.byIA[local]; ok {
-		return lu
-	}
-	return nil
 }
 
 func (m *membershipLookuper) lookupByISD(isd addr.ISD) segreqgrpc.Lookuper {
