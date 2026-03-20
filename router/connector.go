@@ -29,7 +29,7 @@ import (
 // Connector implements the Dataplane interface used by the router control API. It sets
 // up connections for the data plane.
 type Connector struct {
-    DataPlane dataPlane
+	DataPlane dataPlane
 
 	ia                 addr.IA
 	mtx                sync.Mutex
@@ -83,11 +83,11 @@ func (c *Connector) CreateIACtx(ia addr.IA) error {
 // AddLocalIA registers an additional local IA on the dataplane without
 // changing the primary IA context used by the connector.
 func (c *Connector) AddLocalIA(ia addr.IA) error {
-    c.mtx.Lock()
-    defer c.mtx.Unlock()
-    log.Debug("AddLocalIA", "isd_as", ia)
-    // Allow adding additional IAs even if they differ from the primary IA.
-    return c.DataPlane.AddLocalIA(ia)
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	log.Debug("AddLocalIA", "isd_as", ia)
+	// Allow adding additional IAs even if they differ from the primary IA.
+	return c.DataPlane.AddLocalIA(ia)
 }
 
 // AddInternalInterface adds the internal interface.
@@ -197,6 +197,12 @@ func (c *Connector) SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	return c.DataPlane.SetMembershipKeys(keyDerivation, isds)
+}
+
+func (c *Connector) SetPrivateOnlyAS(v bool) error {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return c.DataPlane.SetPrivateOnlyAS(v)
 }
 
 func (c *Connector) ListInternalInterfaces() ([]control.InternalInterface, error) {

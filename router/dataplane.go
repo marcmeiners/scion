@@ -235,6 +235,7 @@ type dataPlane struct {
 	localIA             addr.IA
 	localIAs            map[addr.IA]struct{}
 	localIAByISD        map[addr.ISD]addr.IA
+	privateOnlyAS       bool
 	mtx                 sync.Mutex
 	running             atomic.Bool
 	Metrics             *Metrics
@@ -491,6 +492,16 @@ func (d *dataPlane) SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD
 	return nil
 }
 
+func (d *dataPlane) SetPrivateOnlyAS(v bool) error {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.isRunning() {
+		return errModifyExisting
+	}
+	d.privateOnlyAS = v
+	return nil
+}
+
 func (d *dataPlane) getMACFactory(isd addr.ISD) func() hash.Hash {
 	if d.macFactories != nil {
 		if factory, ok := d.macFactories[isd]; ok {
@@ -623,7 +634,8 @@ func (d *dataPlane) AddNeighborIA(ifID uint16, remote addr.IA) error {
 }
 
 // allowOnInterface returns true if the IA is allowed to traverse the given interface.
-// Private-only interfaces reject public traffic and can optionally restrict to a set of private ISDs.
+// Private-only interfaces only admit destination ISDs that correspond to served private memberships.
+// If an explicit allowlist exists, admission is additionally restricted to that set.
 func (d *dataPlane) allowOnInterface(ifID uint16, ia addr.IA) bool {
 	if !d.privateOnly[ifID] {
 		return true
@@ -631,12 +643,37 @@ func (d *dataPlane) allowOnInterface(ifID uint16, ia addr.IA) bool {
 	if ia.IsZero() {
 		return false
 	}
+	// Reject public / non-membership destinations on private-only interfaces.
+	if !d.isPrivateMembershipISD(ia.ISD()) {
+		return false
+	}
 	allowed := d.allowedPriv[ifID]
 	if len(allowed) == 0 {
-		// Private-only, but no explicit allowlist: accept any non-zero ISD (i.e., any private membership).
+		// Private-only with no explicit allowlist: allow any served private membership ISD.
 		return true
 	}
 	_, ok := allowed[ia.ISD()]
+	return ok
+}
+
+func (d *dataPlane) isPrivateMembershipISD(isd addr.ISD) bool {
+	if d.localIA.IsZero() {
+		return false
+	}
+	// In regular ASes, the primary local IA is the public/default context.
+	if !d.privateOnlyAS && isd == d.localIA.ISD() {
+		return false
+	}
+	if d.macFactories != nil {
+		_, ok := d.macFactories[isd]
+		if ok {
+			return true
+		}
+		// For private-only ASes, the primary IA is private even if no explicit
+		// per-membership factory was installed for that ISD.
+		return d.privateOnlyAS && isd == d.localIA.ISD()
+	}
+	_, ok := d.localIAByISD[isd]
 	return ok
 }
 
