@@ -1747,6 +1747,64 @@ func TestProcessPkt(t *testing.T) {
 	}
 }
 
+func TestMembershipMACIsolation(t *testing.T) {
+	now := time.Now()
+
+	const (
+		privateISD             = addr.ISD(25)
+		hopFieldDefaultExpTime = 63
+	)
+	baseKey := []byte("testkey_base____")
+	privateKey := []byte("testkey_private_")
+
+	newDP := func() *router.DataPlane {
+		dp := router.NewDP(
+			// interface 1
+			[]uint16{1},
+			nil,
+			nil,
+			map[uint16]netip.AddrPort{},
+			addr.MustParseIA("1-ff00:0:110"),
+			nil,
+			baseKey,
+		)
+		require.NoError(t, dp.SetKey(addr.MustParseIA("25-ff00:0:110"), privateKey))
+		return dp
+	}
+
+	buildPkt := func(dstIA addr.IA, key []byte) *router.Packet {
+		spkt, dpath := prepBaseMsg(now)
+		spkt.DstIA = dstIA
+		require.NoError(t, spkt.SetDstAddr(addr.MustParseHost("10.0.100.100")))
+		dpath.HopFields = []path.HopField{
+			{ConsIngress: 41, ConsEgress: 40, ExpTime: hopFieldDefaultExpTime},
+			{ConsIngress: 31, ConsEgress: 30, ExpTime: hopFieldDefaultExpTime},
+			// this hop field is checked later on, it is the ingress to AS 110
+			{ConsIngress: 1, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime},
+		}
+		dpath.Base.PathMeta.CurrHF = 2
+		// set the MAC for our hop field of interest
+		dpath.HopFields[2].Mac = computeMAC(t, key, dpath.InfoFields[0], dpath.HopFields[2])
+		return router.NewPacket(toBytes(t, spkt, dpath), nil, nil, 1, 0)
+	}
+
+	// send packet to private membership with hopfield signed using private membership forwarding key -> should not be dropped
+	t.Run("accepts matching membership MAC", func(t *testing.T) {
+		dp := newDP()
+		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("25-ff00:0:110"), privateKey))
+		// Check if no MAC failure
+		require.NotEqual(t, router.PSlowPath, disp)
+	})
+
+	// send packet to private membership with hopfield signed using public membership forwarding key -> should be dropped
+	t.Run("rejects mismatched membership MAC", func(t *testing.T) {
+		dp := newDP()
+		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("25-ff00:0:110"), baseKey))
+		// Check if no MAC failure
+		require.Equal(t, router.PSlowPath, disp)
+	})
+}
+
 func assertPktEqual(t *testing.T, a, b *router.Packet) {
 	// router.Packet.RemoteAddr is declared as unsafe.Pointer, so it can only be compared
 	// by address. That isn't what we want. We want the actual addresses compared. We know that
