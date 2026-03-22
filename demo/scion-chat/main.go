@@ -117,17 +117,16 @@ func runClient(ctx context.Context, sd daemon.Connector, topo snet.Topology,
 
 	localIP, err := addrutil.DefaultLocalIP(ctx, daemon.TopoQuerier{Connector: sd})
 	check(err)
-	srcIA := topo.LocalIA
-	if isd != 0 {
-		var err error
-		srcIA, err = addr.IAFrom(isd, topo.LocalIA.AS())
-		check(err)
-	}
-	p, err := path.Choose(ctx, sd, dstIA,
-		path.WithSourceIA(srcIA),
+	opts := []path.Option{
 		path.WithPrivateOnly(privOnly),
 		path.WithRefresh(refresh),
-	)
+	}
+	if isd != 0 {
+		srcIA, err := addr.IAFrom(isd, topo.LocalIA.AS())
+		check(err)
+		opts = append(opts, path.WithSourceIA(srcIA))
+	}
+	p, err := path.Choose(ctx, sd, dstIA, opts...)
 	check(err)
 	nextHop := p.UnderlayNextHop()
 

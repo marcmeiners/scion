@@ -47,17 +47,19 @@ type Fetcher interface {
 }
 
 type fetcher struct {
-	defaultIA addr.IA
-	pather    *segfetcher.Pather
-	perISD    map[addr.ISD]*segfetcher.Pather
-	config    config.SDConfig
+	defaultIA     addr.IA
+	pather        *segfetcher.Pather
+	perISD        map[addr.ISD]*segfetcher.Pather
+	privateOnlyAS bool
+	config        config.SDConfig
 }
 
 type FetcherConfig struct {
-	IA         addr.IA
-	MTU        uint16
-	Core       bool
-	NextHopper interface {
+	IA            addr.IA
+	MTU           uint16
+	Core          bool
+	PrivateOnlyAS bool
+	NextHopper    interface {
 		UnderlayNextHop(uint16) *net.UDPAddr
 	}
 
@@ -128,10 +130,11 @@ func NewFetcher(cfg FetcherConfig) Fetcher {
 	defaultPather = perISD[cfg.IA.ISD()]
 
 	return &fetcher{
-		defaultIA: cfg.IA,
-		pather:    defaultPather,
-		perISD:    perISD,
-		config:    cfg.Cfg,
+		defaultIA:     cfg.IA,
+		pather:        defaultPather,
+		perISD:        perISD,
+		privateOnlyAS: cfg.PrivateOnlyAS,
+		config:        cfg.Cfg,
 	}
 }
 
@@ -184,15 +187,16 @@ func (f *fetcher) GetPaths(ctx context.Context, src, dst addr.IA,
 		}
 	}
 
-	// if dst is private only return paths within the provided isd within dst
+	// if dst is not the main membership of that AS, only return paths within the provided isd within dst
 	if privatePather, isInISDList := f.perISD[dst.ISD()]; isInISDList && dst.ISD() != f.defaultIA.ISD() {
 		addCandidate(privatePather, dst)
 	} else {
-		// if dst is public add public paths and all possible private paths
+		// if dst is the main membership, add public paths and all possible private paths
 		for isd, p := range f.perISD {
 			if isd == f.defaultIA.ISD() {
-				// skip default (public) ISD if privateOnly is requested
-				if privateOnly {
+				// Skip default ISD only if it is the public/default context.
+				// In private-only ASes, defaultIA itself is private and must be included.
+				if privateOnly && !f.privateOnlyAS {
 					continue
 				}
 				// leave public ia case unchanged
