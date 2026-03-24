@@ -48,7 +48,7 @@ func main() {
 
 	switch *mode {
 	case "server":
-		runServer(ctx, sd, topo, *listenPort)
+		runServer(ctx, sd, topo, *listenPort, addr.ISD(*privateISD))
 	case "client":
 		if *dstIAFlag == "" || *dstIPFlag == "" {
 			fmt.Println("need -dst-ia and -dst-ip")
@@ -64,14 +64,22 @@ func main() {
 	}
 }
 
-func runServer(ctx context.Context, sd daemon.Connector, topo snet.Topology, port int) {
+func runServer(ctx context.Context, sd daemon.Connector, topo snet.Topology, port int, isd addr.ISD) {
 	localIP, err := addrutil.DefaultLocalIP(ctx, daemon.TopoQuerier{Connector: sd})
 	check(err)
-	sn := &snet.SCIONNetwork{Topology: topo}
+
+	listenTopo := topo
+	if isd != 0 {
+		ia, err := addr.IAFrom(isd, topo.LocalIA.AS())
+		check(err)
+		listenTopo.LocalIA = ia
+	}
+
+	sn := &snet.SCIONNetwork{Topology: listenTopo}
 	conn, err := sn.Listen(ctx, "udp", &net.UDPAddr{IP: localIP, Port: port})
 	check(err)
 	defer conn.Close()
-	fmt.Printf("server listening on %s IA %s\n", conn.LocalAddr(), topo.LocalIA)
+	fmt.Printf("server listening on %s IA %s\n", conn.LocalAddr(), listenTopo.LocalIA)
 
 	var (
 		lastAddr net.Addr
@@ -129,6 +137,10 @@ func runClient(ctx context.Context, sd daemon.Connector, topo snet.Topology,
 	p, err := path.Choose(ctx, sd, dstIA, opts...)
 	check(err)
 	nextHop := p.UnderlayNextHop()
+	effectiveDstIA := dstIA
+	if d := p.Destination(); d != 0 {
+		effectiveDstIA = d
+	}
 
 	// Ensure the SCION header source IA matches the membership used for path lookup.
 	dialTopo := topo
@@ -140,14 +152,14 @@ func runClient(ctx context.Context, sd daemon.Connector, topo snet.Topology,
 	}
 	sn := &snet.SCIONNetwork{Topology: dialTopo}
 	conn, err := sn.Dial(ctx, "udp", &net.UDPAddr{IP: localIP}, &snet.UDPAddr{
-		IA:      dstIA,
+		IA:      effectiveDstIA,
 		Path:    p.Dataplane(),
 		NextHop: nextHop,
 		Host:    &net.UDPAddr{IP: dstIP, Port: dstPort},
 	})
 	check(err)
 	defer conn.Close()
-	fmt.Printf("client connected to %s via %s\n", dstIA, p)
+	fmt.Printf("client connected to %s via %s\n", effectiveDstIA, p)
 
 	recvDone := make(chan struct{})
 	go func() {
