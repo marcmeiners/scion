@@ -78,14 +78,40 @@ table_exists() {
 sql_exec() {
     local db="$1"
     local sql="$2"
-    sqlite3 "$db" "PRAGMA busy_timeout=2000; PRAGMA foreign_keys=ON; ${sql}" >/dev/null
+    local out rc
+    out="$(sqlite3 "$db" "PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; ${sql}" 2>&1 >/dev/null)" || rc=$?
+    rc="${rc:-0}"
+    if [[ "$rc" -eq 0 ]]; then
+        return 0
+    fi
+    # Keep hold-mode running under write contention with live services.
+    # Skip lock timeouts and continue with remaining DBs.
+    if [[ "$out" == *"database is locked"* ]] || [[ "$out" == *"database table is locked"* ]]; then
+        echo "warning: skipped locked DB ${db}"
+        return 0
+    fi
+    echo "error: sqlite operation failed on ${db}: ${out}" >&2
+    return "$rc"
 }
 
 inject_once() {
     local db_count=0
-    # phase 1: remove public routing/beacon state first
+    # phase 1: remove public trust material first (TRCs/chains)
+    # so new public lookups/trust checks fail immediately.
     while IFS= read -r db; do
         db_count=$((db_count + 1))
+        if table_exists "$db" "trcs"; then
+            sql_exec "$db" "DELETE FROM trcs WHERE isd_id = ${PUBLIC_ISD};"
+            echo "pruned public TRCs in ${db}"
+        fi
+        if table_exists "$db" "chains"; then
+            sql_exec "$db" "DELETE FROM chains WHERE isd_id = ${PUBLIC_ISD};"
+            echo "pruned public chains in ${db}"
+        fi
+    done < <(discover_dbs)
+
+    # phase 2: remove public routing/beacon state
+    while IFS= read -r db; do
         if table_exists "$db" "Beacons"; then
             sql_exec "$db" "DELETE FROM Beacons WHERE LocalIsd = ${PUBLIC_ISD};"
             echo "pruned public beacons in ${db}"
@@ -96,18 +122,6 @@ inject_once() {
                 sql_exec "$db" "DELETE FROM NextQuery WHERE SrcIsdID = ${PUBLIC_ISD} OR DstIsdID = ${PUBLIC_ISD};"
             fi
             echo "pruned public paths in ${db}"
-        fi
-    done < <(discover_dbs)
-
-    # phase 2: remove public trust material (TRCs/chains) after path/beacon state
-    while IFS= read -r db; do
-        if table_exists "$db" "trcs"; then
-            sql_exec "$db" "DELETE FROM trcs WHERE isd_id = ${PUBLIC_ISD};"
-            echo "pruned public TRCs in ${db}"
-        fi
-        if table_exists "$db" "chains"; then
-            sql_exec "$db" "DELETE FROM chains WHERE isd_id = ${PUBLIC_ISD};"
-            echo "pruned public chains in ${db}"
         fi
     done < <(discover_dbs)
     if [[ "$db_count" -eq 0 ]]; then
