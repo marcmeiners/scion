@@ -1912,6 +1912,150 @@ func TestMembershipTrafficContainment(t *testing.T) {
 	})
 }
 
+// TestMembershipSegmentStitchingIsolation verifies that stitching a public path
+// segment (PS1, ISD 1) with a private path segment (PS2, ISD 25) — as a SCION
+// daemon would do when building a path from control-service segments — cannot
+// produce a packet that a private-ISD router accepts.
+func TestMembershipSegmentStitchingIsolation(t *testing.T) {
+	now := time.Now()
+
+	const (
+		privateISD             = addr.ISD(25)
+		hopFieldDefaultExpTime = 63
+	)
+	// 3 ASes, each with its own independent 16-byte base forwarding key.
+	// The crossover AS (1-ff00:0:110 / 25-ff00:0:110) is the router under test.
+	key320 := []byte("key_320_________") // 1-ff00:0:320 (public child)
+	key110 := []byte("key_110_________") // 1-ff00:0:110 / 25-ff00:0:110  (core, crossover)
+	key100 := []byte("key_100_________") // 25-ff00:0:100  (private core)
+
+	kd110, err := scrypto.NewMembershipKeyDerivation(key110)
+	require.NoError(t, err)
+
+	// newDP creates the dual-membership crossover router using key110.
+	newDP := func() *router.DataPlane {
+		dp := router.NewDP(
+			[]uint16{1},
+			nil,
+			nil,
+			map[uint16]netip.AddrPort{},
+			addr.MustParseIA("1-ff00:0:110"),
+			nil,
+			key110,
+		)
+		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
+		require.NoError(t, dp.SetMembershipKeys(kd110, []addr.ISD{privateISD}))
+		return dp
+	}
+
+	mac320, err := scrypto.HFMacFactory(key320)
+	require.NoError(t, err)
+	mac110std, err := scrypto.HFMacFactory(key110) // crossover AS, standard (PS1)
+	require.NoError(t, err)
+	mac110priv, err := kd110.MACFactory(privateISD) // crossover AS, ISD-25 derived (PS2)
+	require.NoError(t, err)
+	kd100, err := scrypto.NewMembershipKeyDerivation(key100)
+	require.NoError(t, err)
+	mac100, err := kd100.MACFactory(privateISD)
+	require.NoError(t, err)
+
+	// PS1: public up-segment (ISD 1)
+	// 1-ff00:0:320 ──if12──► 1-ff00:0:110
+	ps1Info := path.InfoField{SegID: 0x111, ConsDir: true, Timestamp: util.TimeToSecs(now)}
+	ps1HF0 := path.HopField{ConsIngress: 11, ConsEgress: 12, ExpTime: hopFieldDefaultExpTime}
+	ps1HF1 := path.HopField{ConsIngress: 1, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime}
+	ps1HF0.Mac = path.MAC(mac320(), ps1Info, ps1HF0, nil)
+	ps1HF1.Mac = path.MAC(mac110std(), ps1Info, ps1HF1, nil)
+	ps1Hops := []path.HopField{ps1HF0, ps1HF1}
+
+	ps2Info := path.InfoField{SegID: 0x222, ConsDir: true, Timestamp: util.TimeToSecs(now)}
+
+	// PS2 used in the stitched attack path: 25-ff00:0:110 ──if21──► 25-ff00:0:100
+	// These hops are never the current hop in the attack test (the MAC check fails
+	// at HF[1] in PS1 before the path ever advances to PS2), so their MACs are zero.
+	ps2FwdHops := []path.HopField{
+		{ConsIngress: 0, ConsEgress: 21, ExpTime: hopFieldDefaultExpTime}, // 25-ff00:0:110
+		{ConsIngress: 22, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime}, // 25-ff00:0:100
+	}
+
+	// PS2 used in the acceptance test: 25-ff00:0:100 ──if21──► 25-ff00:0:110
+	// A private packet arriving at the crossover's private face for local delivery.
+	ps2RevHF0 := path.HopField{ConsIngress: 0, ConsEgress: 21, ExpTime: hopFieldDefaultExpTime}
+	ps2RevHF1 := path.HopField{ConsIngress: 1, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime}
+	ps2RevHF0.Mac = path.MAC(mac100(), ps2Info, ps2RevHF0, nil)
+	ps2RevHF1.Mac = path.MAC(mac110priv(), ps2Info, ps2RevHF1, nil)
+	ps2RevHops := []path.HopField{ps2RevHF0, ps2RevHF1}
+
+	// stitchedPath is the full attack path:
+	//   1-ff00:0:320 ──PS1──► 1-ff00:0:110 ──PS2──► 25-ff00:0:100
+	// SegLen=[2,2,0]: two hops per segment, four total.
+	// DstIA = 25-ff00:0:100 (private destination, not local to the crossover router).
+	stitchedPath := func(currHF, currINF uint8) *scion.Decoded {
+		hops := make([]path.HopField, 0, len(ps1Hops)+len(ps2FwdHops))
+		hops = append(hops, ps1Hops...)
+		hops = append(hops, ps2FwdHops...)
+		return &scion.Decoded{
+			Base: scion.Base{
+				PathMeta: scion.MetaHdr{
+					CurrHF:  currHF,
+					CurrINF: currINF,
+					SegLen:  [3]uint8{2, 2, 0},
+				},
+				NumINF:  2,
+				NumHops: 4,
+			},
+			InfoFields: []path.InfoField{ps1Info, ps2Info},
+			HopFields:  hops,
+		}
+	}
+
+	buildPkt := func(t *testing.T, dpath *scion.Decoded, dstIA, srcIA addr.IA) *router.Packet {
+		t.Helper()
+		spkt, _ := prepBaseMsg(now)
+		spkt.DstIA = dstIA
+		spkt.SrcIA = srcIA
+		require.NoError(t, spkt.SetDstAddr(addr.MustParseHost("10.0.100.100")))
+		return router.NewPacket(toBytes(t, spkt, dpath), nil, nil, 1, 0)
+	}
+
+	// Stitching attack: attacker combines PS1 and PS2 into one path, setting DstIA
+	// into the private ISD. The router is at the PS1 terminal (CurrHF=1, CurrINF=0,
+	// which is also the entry point of AS 110). getMACFactory(DstIA.ISD()==25) returns the
+	// ISD-25 derived key. That key cannot verify HF[1], which AS 1-ff00:0:110 signed
+	// with its own public-ISD forwarding key → MAC failure
+	t.Run("rejects stitched path: PS1 hop signed with AS own key, DstIA in private ISD", func(t *testing.T) {
+		t.Parallel()
+
+		dp := newDP()
+		pkt := buildPkt(t, stitchedPath(1, 0),
+			addr.MustParseIA("25-ff00:0:100"), addr.MustParseIA("1-ff00:0:320"))
+		require.Equal(t, router.PSlowPath, dp.ProcessPkt(pkt))
+	})
+
+	// Legitimate private path: a plain PS2 arriving at AS 110's private face.
+	// No PS1 involved — this is an independent packet already inside ISD 25.
+	// AS 100 signs HF[0], AS 110 signs HF[1] with its ISD-25 derived key.
+	// getMACFactory(25) returns that same key → MAC match → local delivery
+	t.Run("accepts PS2-only path signed with ISD-25 key", func(t *testing.T) {
+		t.Parallel()
+
+		ps2Only := &scion.Decoded{
+			Base: scion.Base{
+				PathMeta: scion.MetaHdr{CurrHF: 1, SegLen: [3]uint8{2, 0, 0}},
+				NumINF:   1,
+				NumHops:  2,
+			},
+			InfoFields: []path.InfoField{ps2Info},
+			HopFields:  ps2RevHops,
+		}
+
+		dp := newDP()
+		pkt := buildPkt(t, ps2Only,
+			addr.MustParseIA("25-ff00:0:110"), addr.MustParseIA("2-ff00:0:222"))
+		require.NotEqual(t, router.PSlowPath, dp.ProcessPkt(pkt))
+	})
+}
+
 func assertPktEqual(t *testing.T, a, b *router.Packet) {
 	// router.Packet.RemoteAddr is declared as unsafe.Pointer, so it can only be compared
 	// by address. That isn't what we want. We want the actual addresses compared. We know that
