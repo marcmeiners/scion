@@ -1818,6 +1818,100 @@ func TestMembershipMACIsolation(t *testing.T) {
 	})
 }
 
+// TestMembershipTrafficContainment verifies that a shared private-only interface
+// enforces ISD-level traffic containment. In the private ISD design, one physical
+// interface is shared across all private memberships and marked PrivateOnly=true
+// with an empty AllowedPriv list (= allow any served private membership ISD).
+//
+//   - Public-ISD traffic arriving on the private-only interface is dropped
+//   - Private-ISD traffic arriving on the same interface is accepted
+func TestMembershipTrafficContainment(t *testing.T) {
+	now := time.Now()
+
+	const (
+		privateISD             = addr.ISD(25)
+		hopFieldDefaultExpTime = 63
+	)
+	baseKey := []byte("testkey_base____")
+
+	kd, err := scrypto.NewMembershipKeyDerivation(baseKey)
+	require.NoError(t, err)
+	privateMacFactory, err := kd.MACFactory(privateISD)
+	require.NoError(t, err)
+	publicMacFactory, err := scrypto.HFMacFactory(baseKey)
+	require.NoError(t, err)
+
+	// newDP builds a dual-member dataplane with one shared private-only interface (if 1).
+	// PrivateOnly=true, AllowedPriv=[] means: block public ISD traffic, pass any served
+	// private membership ISD (here ISD 25).
+	newDP := func() *router.DataPlane {
+		dp := router.NewDP(
+			[]uint16{},
+			nil, nil,
+			map[uint16]netip.AddrPort{},
+			addr.MustParseIA("1-ff00:0:110"),
+			nil,
+			baseKey,
+		)
+		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
+		require.NoError(t, dp.SetMembershipKeys(kd, []addr.ISD{privateISD}))
+		lh := addr.HostIP(netip.MustParseAddr("203.0.113.0")) // AS 110
+		rh := addr.HostIP(netip.MustParseAddr("203.0.113.1")) // neighbor
+		require.NoError(t, dp.AddExternalInterface(1, control.LinkInfo{
+			Provider:    "udpip",
+			Local:       control.LinkEnd{IA: addr.MustParseIA("1-ff00:0:1"), Addr: "203.0.113.0:3333"},
+			Remote:      control.LinkEnd{IA: addr.MustParseIA("25-ff00:0:1"), Addr: "203.0.113.1:3333"},
+			BFD:         control.BFD{Disable: ptr.To(true)},
+			PrivateOnly: true,
+		}, lh, rh))
+		return dp
+	}
+
+	buildPkt := func(t *testing.T, dstIA addr.IA, macFactory func() hash.Hash) *router.Packet {
+		t.Helper()
+		info := path.InfoField{SegID: 0x111, ConsDir: true, Timestamp: util.TimeToSecs(now)}
+		hops := []path.HopField{
+			{ConsIngress: 41, ConsEgress: 40, ExpTime: hopFieldDefaultExpTime},
+			{ConsIngress: 1, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime},
+		}
+		hops[1].Mac = path.MAC(macFactory(), info, hops[1], nil)
+
+		spkt, _ := prepBaseMsg(now)
+		spkt.DstIA = dstIA
+		require.NoError(t, spkt.SetDstAddr(addr.MustParseHost("10.0.100.100")))
+		dpath := &scion.Decoded{
+			Base: scion.Base{
+				PathMeta: scion.MetaHdr{CurrHF: 1, SegLen: [3]uint8{2, 0, 0}},
+				NumINF:   1,
+				NumHops:  2,
+			},
+			InfoFields: []path.InfoField{info},
+			HopFields:  hops,
+		}
+		return router.NewPacket(toBytes(t, spkt, dpath), nil, nil, 1, 0)
+	}
+
+	// Public-ISD traffic arrives on the shared private-only interface
+	// isPrivateMembershipISD(1) = false → allowOnInterface returns false → dropped
+	t.Run("public service blocked on shared private-only interface", func(t *testing.T) {
+		t.Parallel()
+
+		dp := newDP()
+		pkt := buildPkt(t, addr.MustParseIA("1-ff00:0:320"), publicMacFactory)
+		require.Equal(t, router.PDiscard, dp.ProcessPkt(pkt))
+	})
+
+	// Private-ISD traffic arrives on the shared private-only interface
+	// isPrivateMembershipISD(25) = true, AllowedPriv empty → passes; MAC matches
+	t.Run("private service reachable via shared private-only interface", func(t *testing.T) {
+		t.Parallel()
+
+		dp := newDP()
+		pkt := buildPkt(t, addr.MustParseIA("25-ff00:0:110"), privateMacFactory)
+		require.NotEqual(t, router.PSlowPath, dp.ProcessPkt(pkt))
+	})
+}
+
 func assertPktEqual(t *testing.T, a, b *router.Packet) {
 	// router.Packet.RemoteAddr is declared as unsafe.Pointer, so it can only be compared
 	// by address. That isn't what we want. We want the actual addresses compared. We know that
