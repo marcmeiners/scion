@@ -8,15 +8,15 @@ Usage: $0 <num_children> [name_prefix]
 Generates two topology files in topology/:
   1) <prefix>_public_<N>.topo
      - root public core (ISD 1)
-     - N second-level public cores, each in its own public ISD (outside 16..63)
+     - N second-level public cores, each in its own public ISD (outside 4096..65535)
 
   2) <prefix>_private_<N>.topo
      - root public core (ISD 1)
      - N second-level public children (ISD 1), each core of its own private ISD
-       in range 16..63
+       in range 4096..65535
 
 Constraints:
-  - 1 <= N <= 48  (private ISD range 16..63 has 48 values)
+  - 1 <= N <= 61440  (private ISD range 4096..65535 has 61440 values)
 USAGE
 }
 
@@ -36,8 +36,8 @@ if (( N < 1 )); then
   echo "error: num_children must be >= 1" >&2
   exit 1
 fi
-if (( N > 48 )); then
-  echo "error: num_children must be <= 48 (private ISD range 16..63)" >&2
+if (( N > 61440 )); then
+  echo "error: num_children must be <= 61440 (private ISD range 4096..65535)" >&2
   exit 1
 fi
 
@@ -61,7 +61,7 @@ ASes:
 EOF_PUBLIC
 
 for ((i=1; i<=N; i++)); do
-  child_isd=$((100 + i))         # keep public ISDs outside private range 16..63
+  child_isd=$((100 + i))         # keep public ISDs outside private range 4096..65535
   child_as_suffix=$((200 + i))   # globally unique AS suffixes
   cat >> "$PUBLIC_FILE" <<EOF_PUBLIC_AS
   "${child_isd}-ff00:0:${child_as_suffix}":
@@ -99,7 +99,7 @@ EOF_PRIVATE
 
 for ((i=1; i<=N; i++)); do
   child_as_suffix=$((200 + i))
-  private_isd=$((15 + i))        # private range 16..63
+  private_isd=$((4095 + i))      # private range 4096..65535
   cat >> "$PRIVATE_FILE" <<EOF_PRIVATE_AS
   "1-ff00:0:${child_as_suffix}":
     cert_issuer: $ROOT_IA
@@ -127,4 +127,4 @@ done
 printf 'generated: %s\n' "$PUBLIC_FILE"
 printf 'generated: %s\n' "$PRIVATE_FILE"
 printf 'children: %d\n' "$N"
-printf 'private ISD range used: 16..%d\n' $((15 + N))
+printf 'private ISD range used: 4096..%d\n' $((4095 + N))

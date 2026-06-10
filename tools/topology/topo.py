@@ -59,6 +59,9 @@ DEFAULT_UNDERLAY = UNDERLAY_4
 ADDR_TYPE_4 = 'IPv4'
 ADDR_TYPE_6 = 'IPv6'
 
+PRIVATE_ISD_MIN = 4096
+PRIVATE_ISD_MAX = 65535
+
 
 class TopoGenArgs(ArgsBase):
     def __init__(self,
@@ -494,8 +497,11 @@ class TopoGenerator(object):
             except (TypeError, ValueError):
                 logging.critical("Invalid private ISD '%s'", value)
                 sys.exit(1)
-            if isd < 16 or isd > 63:
-                logging.critical("Private ISD %s outside permitted range [16, 63]", isd)
+            if isd < PRIVATE_ISD_MIN or isd > PRIVATE_ISD_MAX:
+                logging.critical(
+                    "Private ISD %s outside permitted range [%d, %d]",
+                    isd, PRIVATE_ISD_MIN, PRIVATE_ISD_MAX,
+                )
                 sys.exit(1)
             if isd not in seen:
                 seen[isd] = entry

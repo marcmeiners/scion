@@ -12,12 +12,12 @@ ASes:
     authoritative: true
     issuing: true
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: true
             voting: true
             authoritative: true
             issuing: true
-            cert_issuer: 25-ff00:0:120
+            cert_issuer: 4096-ff00:0:120
   "1-ff00:0:130":
     core: true
     voting: true
@@ -25,32 +25,32 @@ ASes:
     issuing: true
     underlay: UDP/IPv6
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: true
             voting: true
             authoritative: true
             issuing: true
-            cert_issuer: 25-ff00:0:130
+            cert_issuer: 4096-ff00:0:130
   "1-ff00:0:111":
     cert_issuer: 1-ff00:0:110
     underlay: UDP/IPv6
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             voting: false
             authoritative: false
             issuing: false
-            cert_issuer: 25-ff00:0:120
+            cert_issuer: 4096-ff00:0:120
   "1-ff00:0:112":
     cert_issuer: 1-ff00:0:110
     mtu: 1450
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             voting: false
             authoritative: false
             issuing: false
-            cert_issuer: 25-ff00:0:120
+            cert_issuer: 4096-ff00:0:120
   "1-ff00:0:121":
     cert_issuer: 1-ff00:0:120
   "1-ff00:0:122":
@@ -59,31 +59,31 @@ ASes:
   "1-ff00:0:131":
     cert_issuer: 1-ff00:0:130
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             voting: false
             authoritative: false
             issuing: false
-            cert_issuer: 25-ff00:0:130
+            cert_issuer: 4096-ff00:0:130
   "1-ff00:0:132":
     cert_issuer: 1-ff00:0:130
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             voting: false
             authoritative: false
             issuing: false
-            cert_issuer: 25-ff00:0:130
+            cert_issuer: 4096-ff00:0:130
     underlay: UDP/IPv6
   "1-ff00:0:133":
     cert_issuer: 1-ff00:0:130
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             voting: false
             authoritative: false
             issuing: false
-            cert_issuer: 25-ff00:0:130
+            cert_issuer: 4096-ff00:0:130
   "2-ff00:0:210":
     core: true
     voting: true
@@ -97,12 +97,12 @@ ASes:
     issuing: true
     underlay: UDP/IPv6
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: true
             voting: true
             authoritative: true
             issuing: true
-            cert_issuer: 25-ff00:0:220
+            cert_issuer: 4096-ff00:0:220
   "2-ff00:0:211":
     cert_issuer: 2-ff00:0:210
     underlay: UDP/IPv6
@@ -111,25 +111,25 @@ ASes:
   "2-ff00:0:221":
     cert_issuer: 2-ff00:0:220
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             voting: false
             authoritative: false
             issuing: false
-            cert_issuer: 25-ff00:0:220
+            cert_issuer: 4096-ff00:0:220
   "2-ff00:0:222":
     cert_issuer: 2-ff00:0:220
     underlay: UDP/IPv6
-  "25-ff00:0:534":
+  "4096-ff00:0:534":
     private_only_as: true
-    cert_issuer: 25-ff00:0:130
+    cert_issuer: 4096-ff00:0:130
     private_isds:
-        -   isd: 25
+        -   isd: 4096
             core: false
             issuing: true
             voting: false
             authoritative: false
-            cert_issuer: 25-ff00:0:130
+            cert_issuer: 4096-ff00:0:130
 links:
   - {a: "1-ff00:0:110#1",     b: "1-ff00:0:120-A#6",   linkAtoB: CORE}
   - {a: "1-ff00:0:110#2",     b: "1-ff00:0:130-A#104", linkAtoB: CORE, underlay: UDP/IPv6}
@@ -159,5 +159,5 @@ links:
   - {a: "2-ff00:0:211-A#4",   b: "2-ff00:0:222#301",   linkAtoB: CHILD}
   - {a: "2-ff00:0:221#1",     b: "2-ff00:0:222#302",   linkAtoB: CHILD}
   - {a: "1-ff00:0:131#2001",  b: "1-ff00:0:133#2002",  linkAtoB: CHILD, privateonly: true}
-  - {a: "1-ff00:0:133#6001", b: "25-ff00:0:534#6000", linkAtoB: CHILD, privateonly: true, allowedprivate: [25]}
+  - {a: "1-ff00:0:133#6001", b: "4096-ff00:0:534#6000", linkAtoB: CHILD, privateonly: true, allowedprivate: [4096]}
   - {a: "1-ff00:0:133#7001", b: "2-ff00:0:221#7002", linkAtoB: PEER, privateonly: true}

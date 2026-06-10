@@ -25,7 +25,7 @@ func TestStorePerMembershipIsolation(t *testing.T) {
 	}
 
 	iaA := addr.MustParseIA("1-ff00:0:110")
-	iaB := addr.MustParseIA("25-ff00:0:210")
+	iaB := addr.MustParseIA("4096-ff00:0:210")
 
 	storeA, err := beacon.NewCoreBeaconStore(corePolicies, db,
 		beacon.WithMembershipISD(iaA.ISD()))

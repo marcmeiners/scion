@@ -34,7 +34,6 @@ import (
 // Dataplane.
 type Dataplane interface {
 	CreateIACtx(ia addr.IA) error
-	AddLocalIA(ia addr.IA) error
 	AddInternalInterface(ia addr.IA, localHost addr.Host, provider, local string) error
 	AddExternalInterface(
 		localIfID iface.ID, info LinkInfo, localHost, remoteHost addr.Host, owned bool) error
@@ -42,7 +41,6 @@ type Dataplane interface {
 	DelSvc(ia addr.IA, svc addr.SVC, a addr.Host, port uint16) error
 	SetKey(ia addr.IA, index int, key []byte) error
 	SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD) error
-	SetPrivateOnlyAS(v bool) error
 	SetPortRange(start, end uint16)
 }
 
@@ -133,9 +131,6 @@ func ConfigDataplane(dp Dataplane, cfg *Config) error {
 	}
 	// Set ISD-AS
 	if err := dp.CreateIACtx(cfg.IA); err != nil {
-		return err
-	}
-	if err := dp.SetPrivateOnlyAS(cfg.Topo.PrivateOnlyAS()); err != nil {
 		return err
 	}
 	// Set Keys

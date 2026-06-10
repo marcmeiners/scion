@@ -79,6 +79,8 @@ const (
 	// For SCMP packet quoting. A strict minimum of 28 is required. Much more is recommended.
 	minHeadroom      = 512
 	_           uint = minHeadroom - slayers.MaxSCMPHeaderSize // assert >= 28
+
+	privateISDMin addr.ISD = 4096
 )
 
 // BatchConn is a connection that supports batch reads and writes.
@@ -233,9 +235,6 @@ type dataPlane struct {
 	macFactory          func() hash.Hash
 	macFactories        map[addr.ISD]func() hash.Hash
 	localIA             addr.IA
-	localIAs            map[addr.IA]struct{}
-	localIAByISD        map[addr.ISD]addr.IA
-	privateOnlyAS       bool
 	mtx                 sync.Mutex
 	running             atomic.Bool
 	Metrics             *Metrics
@@ -386,59 +385,29 @@ func (d *dataPlane) SetIA(ia addr.IA) error {
 		return errAlreadySet
 	}
 	d.localIA = ia
-	if d.localIAs == nil {
-		d.localIAs = make(map[addr.IA]struct{})
-	}
-	if d.localIAByISD == nil {
-		d.localIAByISD = make(map[addr.ISD]addr.IA)
-	}
-	d.localIAs[ia] = struct{}{}
-	d.localIAByISD[ia.ISD()] = ia
 	return nil
 }
 
-// AddLocalIA adds an additional local IA served by this dataplane instance.
-// It can only be called before the dataplane is running.
-func (d *dataPlane) AddLocalIA(ia addr.IA) error {
-	d.mtx.Lock()
-	defer d.mtx.Unlock()
-	if d.isRunning() {
-		return errModifyExisting
-	}
-	if ia.IsZero() {
-		return errEmptyValue
-	}
-	if d.localIAs == nil {
-		d.localIAs = make(map[addr.IA]struct{})
-	}
-	if d.localIAByISD == nil {
-		d.localIAByISD = make(map[addr.ISD]addr.IA)
-	}
-	d.localIAs[ia] = struct{}{}
-	d.localIAByISD[ia.ISD()] = ia
-	return nil
-}
-
-// hasLocalIA returns true iff ia is one of the configured local IAs.
+// hasLocalIA returns true iff ia addresses the local AS.
+// Public traffic must match the router's primary IA exactly. Private traffic is
+// recognized by its reserved ISD range and uses the primary local AS number.
 func (d *dataPlane) hasLocalIA(ia addr.IA) bool {
 	if ia == d.localIA {
 		return true
 	}
-	if d.localIAs == nil {
+	if !isPrivateMembershipISD(ia.ISD()) {
 		return false
 	}
-	_, ok := d.localIAs[ia]
-	return ok
+	return ia.AS() == d.localIA.AS()
 }
 
-// localIAForISD returns the local IA that belongs to the given ISD if this
-// dataplane serves it (including private memberships). Falls back to the
-// primary localIA otherwise.
+// localIAForISD synthesizes the local IA for private memberships from the
+// primary AS number. Public traffic always uses the primary local IA.
 func (d *dataPlane) localIAForISD(isd addr.ISD) addr.IA {
-	if d.localIAByISD == nil {
+	if !isPrivateMembershipISD(isd) {
 		return 0
 	}
-	return d.localIAByISD[isd]
+	return addr.MustIAFrom(isd, d.localIA.AS())
 }
 
 // SetKey sets the key used for MAC verification. The key provided here should
@@ -489,16 +458,6 @@ func (d *dataPlane) SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD
 		log.Info("Registered membership ISD", "isd", isd)
 	}
 	log.Info("SetMembershipKeys complete", "num_isds", len(isds))
-	return nil
-}
-
-func (d *dataPlane) SetPrivateOnlyAS(v bool) error {
-	d.mtx.Lock()
-	defer d.mtx.Unlock()
-	if d.isRunning() {
-		return errModifyExisting
-	}
-	d.privateOnlyAS = v
 	return nil
 }
 
@@ -633,9 +592,10 @@ func (d *dataPlane) AddNeighborIA(ifID uint16, remote addr.IA) error {
 	return nil
 }
 
-// allowOnInterface returns true if the IA is allowed to traverse the given interface.
-// Private-only interfaces only admit destination ISDs that correspond to served private memberships.
-// If an explicit allowlist exists, admission is additionally restricted to that set.
+// allowOnInterface returns true if the IA is allowed to traverse the given
+// interface. Private-only interfaces only admit destination ISDs from the
+// reserved private range. If an explicit allowlist exists, admission is
+// additionally restricted to that set.
 func (d *dataPlane) allowOnInterface(ifID uint16, ia addr.IA) bool {
 	if !d.privateOnly[ifID] {
 		return true
@@ -643,38 +603,19 @@ func (d *dataPlane) allowOnInterface(ifID uint16, ia addr.IA) bool {
 	if ia.IsZero() {
 		return false
 	}
-	// Reject public / non-membership destinations on private-only interfaces.
-	if !d.isPrivateMembershipISD(ia.ISD()) {
+	if !isPrivateMembershipISD(ia.ISD()) {
 		return false
 	}
 	allowed := d.allowedPriv[ifID]
 	if len(allowed) == 0 {
-		// Private-only with no explicit allowlist: allow any served private membership ISD.
 		return true
 	}
 	_, ok := allowed[ia.ISD()]
 	return ok
 }
 
-func (d *dataPlane) isPrivateMembershipISD(isd addr.ISD) bool {
-	if d.localIA.IsZero() {
-		return false
-	}
-	// In regular ASes, the primary local IA is the public/default context.
-	if !d.privateOnlyAS && isd == d.localIA.ISD() {
-		return false
-	}
-	if d.macFactories != nil {
-		_, ok := d.macFactories[isd]
-		if ok {
-			return true
-		}
-		// For private-only ASes, the primary IA is private even if no explicit
-		// per-membership factory was installed for that ISD.
-		return d.privateOnlyAS && isd == d.localIA.ISD()
-	}
-	_, ok := d.localIAByISD[isd]
-	return ok
+func isPrivateMembershipISD(isd addr.ISD) bool {
+	return isd >= privateISDMin
 }
 
 // newExternalInterfaceBFD adds the inter AS connection BFD session.
@@ -1078,13 +1019,20 @@ func (p *slowPathPacketProcessor) reset() {
 }
 
 // replyIA returns the local IA to use for SCMP replies created on the slow
-// path. It selects the local IA that matches the destination ISD (public or
-// private membership), falling back to the primary local IA.
+// path. Private packets derive the local IA from the packet ISD and the
+// router's primary AS number; public traffic falls back to the primary IA.
 func (p *slowPathPacketProcessor) replyIA() addr.IA {
 	if ia := p.d.localIAForISD(p.scionLayer.DstIA.ISD()); ia != 0 {
 		return ia
 	}
 	return p.d.localIA
+}
+
+func (p *scionPacketProcessor) localIAForPacketDst() addr.IA {
+	if ia := p.d.localIAForISD(p.scionLayer.DstIA.ISD()); ia != 0 {
+		return ia
+	}
+	return 0
 }
 
 func (p *slowPathPacketProcessor) processPacket(pkt *Packet) error {
@@ -1181,13 +1129,14 @@ func (p *scionPacketProcessor) reset() error {
 }
 
 // replyIA returns the local IA to use for SCMP replies and other
-// local-originated packets. It picks the local IA that matches the destination
-// ISD (public or private membership), falling back to the primary local IA.
+// local-originated packets. Private packets derive the local IA from the
+// packet ISD and the router's primary AS number; public traffic falls back to
+// the primary local IA.
 func (p *scionPacketProcessor) replyIA() addr.IA {
 	if p.matchedLocalIA != 0 {
 		return p.matchedLocalIA
 	}
-	if ia := p.d.localIAForISD(p.scionLayer.DstIA.ISD()); ia != 0 {
+	if ia := p.localIAForPacketDst(); ia != 0 {
 		return ia
 	}
 	return p.d.localIA
@@ -1475,11 +1424,22 @@ func (p *scionPacketProcessor) validateIngressID() disposition {
 
 func (p *scionPacketProcessor) validateSrcDstIA() disposition {
 	log.Debug("validate source SRC, DST:", p.scionLayer.SrcIA.String(), p.scionLayer.DstIA.String())
-	srcIsLocal := p.d.hasLocalIA(p.scionLayer.SrcIA)
-	dstIsLocal := p.d.hasLocalIA(p.scionLayer.DstIA)
+	packetPrivate := isPrivateMembershipISD(p.scionLayer.DstIA.ISD())
+	srcIsLocal := false
+	dstIsLocal := false
+	if packetPrivate {
+		srcIsLocal = p.scionLayer.SrcIA.AS() == p.d.localIA.AS()
+		dstIsLocal = p.scionLayer.DstIA.AS() == p.d.localIA.AS()
+	} else {
+		srcIsLocal = p.scionLayer.SrcIA == p.d.localIA
+		dstIsLocal = p.scionLayer.DstIA == p.d.localIA
+	}
 	if dstIsLocal {
-		// Remember which local IA matched for downstream decisions and replies.
-		p.matchedLocalIA = p.scionLayer.DstIA
+		if packetPrivate {
+			p.matchedLocalIA = p.scionLayer.DstIA
+		} else {
+			p.matchedLocalIA = p.d.localIA
+		}
 	}
 	if p.ingressFromLink == 0 {
 		// Outbound
@@ -2038,7 +1998,6 @@ func (p *scionPacketProcessor) processOHP() disposition {
 		// TODO parameter problem -> invalid path
 		return errorDiscard("error", errMalformedPath)
 	}
-
 	// OHP leaving our IA
 	if p.ingressFromLink == 0 {
 		log.Debug("Processing outgoing OHP packet", "src_ia", s.SrcIA, "dst_ia", s.DstIA,

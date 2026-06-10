@@ -43,7 +43,7 @@ func (d *recordingConnDialer) Dial(ctx context.Context, _ net.Addr) (net.Conn, e
 
 func TestMembershipConnDialerAndClientCertSelection(t *testing.T) {
 	publicIA := addr.MustParseIA("1-ff00:0:110")
-	privateIA := addr.MustParseIA("25-ff00:0:110")
+	privateIA := addr.MustParseIA("4096-ff00:0:110")
 
 	loaders := newIALoaders(
 		publicIA,
@@ -80,7 +80,7 @@ func TestMembershipConnDialerAndClientCertSelection(t *testing.T) {
 
 func TestIALoadersServerCertSelectionBySNI(t *testing.T) {
 	publicIA := addr.MustParseIA("1-ff00:0:110")
-	privateIA := addr.MustParseIA("25-ff00:0:110")
+	privateIA := addr.MustParseIA("4096-ff00:0:110")
 
 	loaders := newIALoaders(
 		publicIA,

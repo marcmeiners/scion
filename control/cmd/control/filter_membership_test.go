@@ -12,11 +12,11 @@ import (
 
 // Verify that private-only links are only selected when the membership matches
 func TestPropagationFilterPrivateOnly(t *testing.T) {
-	privateISD := addr.ISD(25)
+	privateISD := addr.ISD(4096)
 	publicISD := addr.ISD(1)
 
-	// interface to a neighbor in private ISD 25, private-only
-	intfPriv := mkIF(10, topology.Core, true, []addr.ISD{privateISD}, nil, mustIA(t, "25-ff00:0:210"))
+	// interface to a neighbor in private ISD 4096, private-only
+	intfPriv := mkIF(10, topology.Core, true, []addr.ISD{privateISD}, nil, mustIA(t, "4096-ff00:0:210"))
 	// interface to a neighbor in public ISD 1, private-only (should be filtered for private membership)
 	intfWrong := mkIF(11, topology.Core, true, nil, nil, mustIA(t, "1-ff00:0:130"))
 	// public interface in ISD 1
@@ -24,7 +24,7 @@ func TestPropagationFilterPrivateOnly(t *testing.T) {
 
 	ifaces := []*ifstate.Interface{intfPriv, intfWrong, intfPub}
 
-	// private membership filter (ISD 25) should keep only intfPriv
+	// private membership filter (ISD 4096) should keep only intfPriv
 	privFilter := newPropagationFilter(true, true, privateISD)
 	privGot := filter(ifaces, privFilter)
 	require.Equal(t, []uint16{10}, ids(privGot))
@@ -37,11 +37,11 @@ func TestPropagationFilterPrivateOnly(t *testing.T) {
 
 // Private membership should not send beacons over public links to public neighbors
 func TestPropagationFilterPrivateToPublicLink(t *testing.T) {
-	privateISD := addr.ISD(25)
+	privateISD := addr.ISD(4096)
 	publicISD := addr.ISD(1)
 
 	intfPublic := mkIF(30, topology.Core, false, nil, nil, mustIA(t, "1-ff00:0:140"))
-	intfPrivate := mkIF(31, topology.Core, true, []addr.ISD{privateISD}, []addr.ISD{privateISD}, mustIA(t, "25-ff00:0:240"))
+	intfPrivate := mkIF(31, topology.Core, true, []addr.ISD{privateISD}, []addr.ISD{privateISD}, mustIA(t, "4096-ff00:0:240"))
 
 	ifaces := []*ifstate.Interface{intfPublic, intfPrivate}
 	privFilter := newPropagationFilter(true, true, privateISD)
@@ -55,13 +55,13 @@ func TestPropagationFilterPrivateToPublicLink(t *testing.T) {
 
 // Verify that private beacons are not sent to neighbors in other private ISDs even on private-only links
 func TestPropagationFilterPrivateOnlyWrongISD(t *testing.T) {
-	privateISD := addr.ISD(25)
-	otherISD := addr.ISD(26)
+	privateISD := addr.ISD(4096)
+	otherISD := addr.ISD(4097)
 
-	// private-only interface but allowed only ISD 26 (not our membership)
-	intfWrongAllowed := mkIF(20, topology.Core, true, []addr.ISD{otherISD}, []addr.ISD{otherISD}, mustIA(t, "26-ff00:0:210"))
-	// private-only interface allowed for ISD 25 (should pass)
-	intfAllowed := mkIF(21, topology.Core, true, []addr.ISD{privateISD}, []addr.ISD{privateISD}, mustIA(t, "25-ff00:0:211"))
+	// private-only interface but allowed only ISD 4097 (not our membership)
+	intfWrongAllowed := mkIF(20, topology.Core, true, []addr.ISD{otherISD}, []addr.ISD{otherISD}, mustIA(t, "4097-ff00:0:210"))
+	// private-only interface allowed for ISD 4096 (should pass)
+	intfAllowed := mkIF(21, topology.Core, true, []addr.ISD{privateISD}, []addr.ISD{privateISD}, mustIA(t, "4096-ff00:0:211"))
 
 	ifaces := []*ifstate.Interface{intfWrongAllowed, intfAllowed}
 	privFilter := newPropagationFilter(true, true, privateISD)

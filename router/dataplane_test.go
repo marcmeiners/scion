@@ -1746,7 +1746,7 @@ func TestMembershipMACIsolation(t *testing.T) {
 
 	const (
 		publicISD              = addr.ISD(1)
-		privateISD             = addr.ISD(25)
+		privateISD             = addr.ISD(4096)
 		hopFieldDefaultExpTime = 63
 	)
 	baseKey := []byte("testkey_base____")
@@ -1770,6 +1770,7 @@ func TestMembershipMACIsolation(t *testing.T) {
 	buildPkt := func(dstIA addr.IA, macFactory func() hash.Hash) *router.Packet {
 		spkt, dpath := prepBaseMsg(now)
 		spkt.DstIA = dstIA
+		spkt.SrcIA = addr.MustParseIA("4096-ff00:0:222")
 		require.NoError(t, spkt.SetDstAddr(addr.MustParseHost("10.0.100.100")))
 		dpath.HopFields = []path.HopField{
 			{ConsIngress: 41, ConsEgress: 40, ExpTime: hopFieldDefaultExpTime},
@@ -1788,7 +1789,6 @@ func TestMembershipMACIsolation(t *testing.T) {
 		t.Parallel()
 
 		dp := newDP()
-		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
 		require.NoError(t, dp.SetMembershipKeys(kd, []addr.ISD{privateISD}))
 		macKey, err := kd.DeriveKey(privateISD)
 		require.NoError(t, err)
@@ -1796,7 +1796,7 @@ func TestMembershipMACIsolation(t *testing.T) {
 		macFactory, err := scrypto.HFMacFactory(macKey)
 		require.NoError(t, err)
 
-		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("25-ff00:0:110"), macFactory))
+		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("4096-ff00:0:110"), macFactory))
 		// Check if no MAC failure
 		require.NotEqual(t, router.PSlowPath, disp)
 	})
@@ -1806,13 +1806,12 @@ func TestMembershipMACIsolation(t *testing.T) {
 		t.Parallel()
 
 		dp := newDP()
-		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
 		require.NoError(t, dp.SetMembershipKeys(kd, []addr.ISD{privateISD}))
 
 		macFactory, err := scrypto.HFMacFactory(baseKey)
 		require.NoError(t, err)
 
-		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("25-ff00:0:110"), macFactory))
+		disp := dp.ProcessPkt(buildPkt(addr.MustParseIA("4096-ff00:0:110"), macFactory))
 		//Check if we have a MAC failure
 		require.Equal(t, router.PSlowPath, disp)
 	})
@@ -1829,7 +1828,7 @@ func TestMembershipTrafficContainment(t *testing.T) {
 	now := time.Now()
 
 	const (
-		privateISD             = addr.ISD(25)
+		privateISD             = addr.ISD(4096)
 		hopFieldDefaultExpTime = 63
 	)
 	baseKey := []byte("testkey_base____")
@@ -1843,7 +1842,7 @@ func TestMembershipTrafficContainment(t *testing.T) {
 
 	// newDP builds a dual-member dataplane with one shared private-only interface (if 1).
 	// PrivateOnly=true, AllowedPriv=[] means: block public ISD traffic, pass any served
-	// private membership ISD (here ISD 25).
+	// private membership ISD (here ISD 4096).
 	newDP := func() *router.DataPlane {
 		dp := router.NewDP(
 			[]uint16{},
@@ -1853,14 +1852,13 @@ func TestMembershipTrafficContainment(t *testing.T) {
 			nil,
 			baseKey,
 		)
-		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
 		require.NoError(t, dp.SetMembershipKeys(kd, []addr.ISD{privateISD}))
 		lh := addr.HostIP(netip.MustParseAddr("203.0.113.0")) // AS 110
 		rh := addr.HostIP(netip.MustParseAddr("203.0.113.1")) // neighbor
 		require.NoError(t, dp.AddExternalInterface(1, control.LinkInfo{
 			Provider:    "udpip",
 			Local:       control.LinkEnd{IA: addr.MustParseIA("1-ff00:0:1"), Addr: "203.0.113.0:3333"},
-			Remote:      control.LinkEnd{IA: addr.MustParseIA("25-ff00:0:1"), Addr: "203.0.113.1:3333"},
+			Remote:      control.LinkEnd{IA: addr.MustParseIA("4096-ff00:0:1"), Addr: "203.0.113.1:3333"},
 			BFD:         control.BFD{Disable: ptr.To(true)},
 			PrivateOnly: true,
 		}, lh, rh))
@@ -1878,6 +1876,9 @@ func TestMembershipTrafficContainment(t *testing.T) {
 
 		spkt, _ := prepBaseMsg(now)
 		spkt.DstIA = dstIA
+		if dstIA.ISD() == privateISD {
+			spkt.SrcIA = addr.MustParseIA("4096-ff00:0:222")
+		}
 		require.NoError(t, spkt.SetDstAddr(addr.MustParseHost("10.0.100.100")))
 		dpath := &scion.Decoded{
 			Base: scion.Base{
@@ -1902,32 +1903,32 @@ func TestMembershipTrafficContainment(t *testing.T) {
 	})
 
 	// Private-ISD traffic arrives on the shared private-only interface
-	// isPrivateMembershipISD(25) = true, AllowedPriv empty → passes; MAC matches
+	// isPrivateMembershipISD(4096) = true, AllowedPriv empty → passes; MAC matches
 	t.Run("private service reachable via shared private-only interface", func(t *testing.T) {
 		t.Parallel()
 
 		dp := newDP()
-		pkt := buildPkt(t, addr.MustParseIA("25-ff00:0:110"), privateMacFactory)
+		pkt := buildPkt(t, addr.MustParseIA("4096-ff00:0:110"), privateMacFactory)
 		require.NotEqual(t, router.PSlowPath, dp.ProcessPkt(pkt))
 	})
 }
 
 // TestMembershipSegmentStitchingIsolation verifies that stitching a public path
-// segment (PS1, ISD 1) with a private path segment (PS2, ISD 25) — as a SCION
+// segment (PS1, ISD 1) with a private path segment (PS2, ISD 4096) — as a SCION
 // daemon would do when building a path from control-service segments — cannot
 // produce a packet that a private-ISD router accepts.
 func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 	now := time.Now()
 
 	const (
-		privateISD             = addr.ISD(25)
+		privateISD             = addr.ISD(4096)
 		hopFieldDefaultExpTime = 63
 	)
 	// 3 ASes, each with its own independent 16-byte base forwarding key.
-	// The crossover AS (1-ff00:0:110 / 25-ff00:0:110) is the router under test.
+	// The crossover AS (1-ff00:0:110 / 4096-ff00:0:110) is the router under test.
 	key320 := []byte("key_320_________") // 1-ff00:0:320 (public child)
-	key110 := []byte("key_110_________") // 1-ff00:0:110 / 25-ff00:0:110  (core, crossover)
-	key100 := []byte("key_100_________") // 25-ff00:0:100  (private core)
+	key110 := []byte("key_110_________") // 1-ff00:0:110 / 4096-ff00:0:110  (core, crossover)
+	key100 := []byte("key_100_________") // 4096-ff00:0:100  (private core)
 
 	kd110, err := scrypto.NewMembershipKeyDerivation(key110)
 	require.NoError(t, err)
@@ -1943,7 +1944,6 @@ func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 			nil,
 			key110,
 		)
-		require.NoError(t, dp.AddLocalIA(addr.MustParseIA("25-ff00:0:110")))
 		require.NoError(t, dp.SetMembershipKeys(kd110, []addr.ISD{privateISD}))
 		return dp
 	}
@@ -1952,7 +1952,7 @@ func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 	require.NoError(t, err)
 	mac110std, err := scrypto.HFMacFactory(key110) // crossover AS, standard (PS1)
 	require.NoError(t, err)
-	mac110priv, err := kd110.MACFactory(privateISD) // crossover AS, ISD-25 derived (PS2)
+	mac110priv, err := kd110.MACFactory(privateISD) // crossover AS, ISD-4096 derived (PS2)
 	require.NoError(t, err)
 	kd100, err := scrypto.NewMembershipKeyDerivation(key100)
 	require.NoError(t, err)
@@ -1970,15 +1970,15 @@ func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 
 	ps2Info := path.InfoField{SegID: 0x222, ConsDir: true, Timestamp: util.TimeToSecs(now)}
 
-	// PS2 used in the stitched attack path: 25-ff00:0:110 ──if21──► 25-ff00:0:100
+	// PS2 used in the stitched attack path: 4096-ff00:0:110 ──if21──► 4096-ff00:0:100
 	// These hops are never the current hop in the attack test (the MAC check fails
 	// at HF[1] in PS1 before the path ever advances to PS2), so their MACs are zero.
 	ps2FwdHops := []path.HopField{
-		{ConsIngress: 0, ConsEgress: 21, ExpTime: hopFieldDefaultExpTime}, // 25-ff00:0:110
-		{ConsIngress: 22, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime}, // 25-ff00:0:100
+		{ConsIngress: 0, ConsEgress: 21, ExpTime: hopFieldDefaultExpTime}, // 4096-ff00:0:110
+		{ConsIngress: 22, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime}, // 4096-ff00:0:100
 	}
 
-	// PS2 used in the acceptance test: 25-ff00:0:100 ──if21──► 25-ff00:0:110
+	// PS2 used in the acceptance test: 4096-ff00:0:100 ──if21──► 4096-ff00:0:110
 	// A private packet arriving at the crossover's private face for local delivery.
 	ps2RevHF0 := path.HopField{ConsIngress: 0, ConsEgress: 21, ExpTime: hopFieldDefaultExpTime}
 	ps2RevHF1 := path.HopField{ConsIngress: 1, ConsEgress: 0, ExpTime: hopFieldDefaultExpTime}
@@ -1987,9 +1987,9 @@ func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 	ps2RevHops := []path.HopField{ps2RevHF0, ps2RevHF1}
 
 	// stitchedPath is the full attack path:
-	//   1-ff00:0:320 ──PS1──► 1-ff00:0:110 ──PS2──► 25-ff00:0:100
+	//   1-ff00:0:320 ──PS1──► 1-ff00:0:110 ──PS2──► 4096-ff00:0:100
 	// SegLen=[2,2,0]: two hops per segment, four total.
-	// DstIA = 25-ff00:0:100 (private destination, not local to the crossover router).
+	// DstIA = 4096-ff00:0:100 (private destination, not local to the crossover router).
 	stitchedPath := func(currHF, currINF uint8) *scion.Decoded {
 		hops := make([]path.HopField, 0, len(ps1Hops)+len(ps2FwdHops))
 		hops = append(hops, ps1Hops...)
@@ -2020,23 +2020,23 @@ func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 
 	// Stitching attack: attacker combines PS1 and PS2 into one path, setting DstIA
 	// into the private ISD. The router is at the PS1 terminal (CurrHF=1, CurrINF=0,
-	// which is also the entry point of AS 110). getMACFactory(DstIA.ISD()==25) returns the
-	// ISD-25 derived key. That key cannot verify HF[1], which AS 1-ff00:0:110 signed
+	// which is also the entry point of AS 110). getMACFactory(DstIA.ISD()==4096) returns the
+	// ISD-4096 derived key. That key cannot verify HF[1], which AS 1-ff00:0:110 signed
 	// with its own public-ISD forwarding key → MAC failure
 	t.Run("rejects stitched path: PS1 hop signed with AS own key, DstIA in private ISD", func(t *testing.T) {
 		t.Parallel()
 
 		dp := newDP()
 		pkt := buildPkt(t, stitchedPath(1, 0),
-			addr.MustParseIA("25-ff00:0:100"), addr.MustParseIA("1-ff00:0:320"))
+			addr.MustParseIA("4096-ff00:0:100"), addr.MustParseIA("1-ff00:0:320"))
 		require.Equal(t, router.PSlowPath, dp.ProcessPkt(pkt))
 	})
 
 	// Legitimate private path: a plain PS2 arriving at AS 110's private face.
-	// No PS1 involved — this is an independent packet already inside ISD 25.
-	// AS 100 signs HF[0], AS 110 signs HF[1] with its ISD-25 derived key.
-	// getMACFactory(25) returns that same key → MAC match → local delivery
-	t.Run("accepts PS2-only path signed with ISD-25 key", func(t *testing.T) {
+	// No PS1 involved — this is an independent packet already inside ISD 4096.
+	// AS 100 signs HF[0], AS 110 signs HF[1] with its ISD-4096 derived key.
+	// getMACFactory(4096) returns that same key → MAC match → local delivery
+	t.Run("accepts PS2-only path signed with ISD-4096 key", func(t *testing.T) {
 		t.Parallel()
 
 		ps2Only := &scion.Decoded{
@@ -2051,7 +2051,7 @@ func TestMembershipSegmentStitchingIsolation(t *testing.T) {
 
 		dp := newDP()
 		pkt := buildPkt(t, ps2Only,
-			addr.MustParseIA("25-ff00:0:110"), addr.MustParseIA("2-ff00:0:222"))
+			addr.MustParseIA("4096-ff00:0:110"), addr.MustParseIA("4096-ff00:0:222"))
 		require.NotEqual(t, router.PSlowPath, dp.ProcessPkt(pkt))
 	})
 }

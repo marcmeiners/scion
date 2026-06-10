@@ -133,7 +133,7 @@ func sanitizePrivateISDs(values []PrivateISDMembership) ([]PrivateISDMembership,
 	}
 	seen := make(map[addr.ISD]PrivateISDMembership, len(values))
 	for _, v := range values {
-		if v.ISD < 16 || v.ISD > 63 {
+		if v.ISD < 4096 || v.ISD > 65535 {
 			return nil, serrors.New("private ISD outside permitted range", "isd", v.ISD)
 		}
 		existing, ok := seen[v.ISD]

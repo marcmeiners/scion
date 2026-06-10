@@ -80,16 +80,6 @@ func (c *Connector) CreateIACtx(ia addr.IA) error {
 	return c.DataPlane.SetIA(ia)
 }
 
-// AddLocalIA registers an additional local IA on the dataplane without
-// changing the primary IA context used by the connector.
-func (c *Connector) AddLocalIA(ia addr.IA) error {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-	log.Debug("AddLocalIA", "isd_as", ia)
-	// Allow adding additional IAs even if they differ from the primary IA.
-	return c.DataPlane.AddLocalIA(ia)
-}
-
 // AddInternalInterface adds the internal interface.
 func (c *Connector) AddInternalInterface(
 	ia addr.IA, localHost addr.Host, provider, localAddr string) error {
@@ -197,12 +187,6 @@ func (c *Connector) SetMembershipKeys(keyDerivation interface{}, isds []addr.ISD
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	return c.DataPlane.SetMembershipKeys(keyDerivation, isds)
-}
-
-func (c *Connector) SetPrivateOnlyAS(v bool) error {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-	return c.DataPlane.SetPrivateOnlyAS(v)
 }
 
 func (c *Connector) ListInternalInterfaces() ([]control.InternalInterface, error) {
